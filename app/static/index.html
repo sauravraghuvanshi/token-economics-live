@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f2f7">
+  <title>Token Economics · Live</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#workbench">Skip to demo controls</a>
+  <header class="masthead">
+    <a class="brand" href="/" aria-label="Token Economics home"><span class="mark" aria-hidden="true">∑</span>
+      <span>Token Economics <b>· Live</b></span></a>
+    <nav id="tabs" aria-label="Demo levers"></nav>
+    <div class="header-actions">
+      <button id="howto-btn" type="button"><span aria-hidden="true">{ }</span> How to implement</button>
+      <button id="dark" type="button" aria-pressed="false" title="Dark mode (D)">Dark</button>
+      <button id="large" type="button" aria-pressed="false" aria-label="Larger text" title="Larger text (+)">A+</button>
+      <span id="status" class="pill offline" role="status">Connecting…</span>
+    </div>
+  </header>
+  <div id="banners" class="banners" aria-live="polite"></div>
+  <main id="workbench" tabindex="-1">
+    <section class="intro">
+      <p class="eyebrow" id="eyebrow">01 / BENCHMARK · CONTOSO CLOUDDESK</p>
+      <h1 id="title">Prompt caching</h1>
+      <p class="subtitle" id="subtitle">Same content, same tokens. Only the order changes.</p>
+    </section>
+    <section id="bench" aria-label="Run comparison">
+      <form class="controls" id="run-form">
+        <label>Mode <select id="mode"></select></label>
+        <label><span id="count-label">Requests</span> <select id="count"></select></label>
+        <button id="run" class="primary" type="submit" disabled>Run</button>
+        <button id="replay" type="button" disabled>Replay last run</button>
+        <span id="progress" class="measure" role="status"></span>
+      </form>
+      <div id="kpis" class="kpis" aria-label="Run metrics"></div>
+      <section id="layout" class="layout" aria-label="Prompt layout"></section>
+      <div id="comparison" class="comparison">
+        <section>
+          <div class="lane-labels"><span>Control · baseline</span><span>Candidate · one change</span></div>
+          <div id="requests" class="requests"></div>
+        </section>
+        <aside id="cache-panel" class="cache-panel" hidden></aside>
+      </div>
+    </section>
+    <section id="scoreboard" aria-label="Scoreboard" hidden></section>
+  </main>
+  <footer><strong>Keep a change only if cost per accepted outcome falls and quality holds.</strong>
+    <span>1–5 Tabs · R Run · P Replay · H How-to</span></footer>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="inspect" class="drawer" aria-labelledby="inspect-title">
+    <div class="dialog-header"><h2 id="inspect-title">Inspect request</h2><form method="dialog"><button>Close</button></form></div>
+    <div id="inspect-body"></div>
+  </dialog>
+  <dialog id="howto" aria-labelledby="howto-title">
+    <div class="dialog-header"><h2 id="howto-title">How to implement</h2><form method="dialog"><button>Close</button></form></div>
+    <div id="howto-body"></div>
+  </dialog>
+  <dialog id="access" aria-labelledby="access-title">
+    <form method="dialog" class="access-form">
+      <h2 id="access-title">Demo access code</h2>
+      <p>Required for actions that can spend your Azure demo budget.</p>
+      <label>Access code <input id="access-code" type="password" maxlength="512" required autocomplete="off"></label>
+      <div class="header-actions"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="allow">Continue</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

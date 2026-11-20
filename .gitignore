@@ -1,0 +1,13 @@
+.copilot-azure/
+.azure/*
+.env
+.env.*
+!.env.example
+.data/
+.venv/
+.tools/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]

@@ -1,0 +1,20 @@
+[
+  {"id": "inv-01", "title": "Clean INR invoice", "kind": "clean",
+   "ocr_text": "NIMBUS CLOUD HOSTING PVT LTD\nGSTIN: 29AAACN1234M1Z2\nInvoice No: NCH/26-27/0412   Date: 03-11-2026\nBill to: Contoso CloudDesk Pvt Ltd, Bengaluru\nItem                         Qty   Rate      Amount\nManaged Kubernetes (Nov)     1     84,000    84,000\nObject storage 20 TB         20    1,100     22,000\nSubtotal                                     1,06,000\nIGST 18%                                     19,080\nTotal (INR)                                  1,25,080",
+   "expected": {"currency": "INR", "gstin": "29AAACN1234M1Z2", "total": 125080, "outcome": "accepted"}},
+  {"id": "inv-02", "title": "Recoverable: OCR misread in the total", "kind": "recoverable",
+   "ocr_text": "SAHYADRI OFFICE SUPPLIES\nGSTIN: 27AAKFS5678Q1Z9\nInvoice No: SOS-7781   Date: 05-11-2026\nBill to: Contoso CloudDesk Pvt Ltd, Bengaluru\nItem               Qty   Rate     Amount\nErgonomic chairs   10    8,500    85,000\nStanding desks     3     11,000   33,000\nSubtotal                          1,18,000\nGST 18%                           21,240\nTotal (INR)                       1,49,240\nAmount in words: One lakh thirty-nine thousand two hundred forty rupees only",
+   "expected": {"currency": "INR", "gstin": "27AAKFS5678Q1Z9", "total": 139240, "outcome": "accepted after a retry"}},
+  {"id": "inv-03", "title": "Runaway trap: USD invoice and a faulty currency tool", "kind": "runaway",
+   "ocr_text": "NORTHWIND ANALYTICS INC.\nInvoice #: NWA-20931   Date: 2026-11-07\nBill to: Contoso CloudDesk Pvt Ltd\nItem                          Qty  Unit price  Amount\nAnalytics platform (annual)   1    4,800.00    4,800.00\nPremium support               1    1,200.00    1,200.00\nTotal (USD)                                    6,000.00",
+   "expected": {"currency": "USD", "total": 6000, "outcome": "handoff (the simulated currency tool always fails)"}},
+  {"id": "inv-04", "title": "Clean INR invoice with CGST and SGST", "kind": "clean",
+   "ocr_text": "VEGA PRINT & BRAND LLP\nGSTIN: 29AAJFV2468K1Z4\nInvoice No: VPB/1187   Date: 10-11-2026\nBill to: Contoso CloudDesk Pvt Ltd, Bengaluru\nItem                 Qty   Rate    Amount\nEvent banners        12    1,500   18,000\nBrochures (500)      1     9,500   9,500\nSubtotal                           27,500\nCGST 9%                            2,475\nSGST 9%                            2,475\nTotal (INR)                        32,450",
+   "expected": {"currency": "INR", "gstin": "29AAJFV2468K1Z4", "total": 32450, "outcome": "accepted"}},
+  {"id": "inv-05", "title": "Recoverable: misprinted line amount", "kind": "recoverable",
+   "ocr_text": "KAVERI FACILITY SERVICES\nGSTIN: 29AAGFK1357P1Z6\nInvoice No: KFS-3320   Date: 12-11-2026\nBill to: Contoso CloudDesk Pvt Ltd, Bengaluru\nItem                    Qty   Rate     Amount\nHousekeeping (Nov)      1     42,000   42,000\nPantry supplies         1     6,000    9,000\nSubtotal                               48,000\nGST 18%                                8,640\nTotal (INR)                            56,640",
+   "expected": {"currency": "INR", "gstin": "29AAGFK1357P1Z6", "total": 56640, "outcome": "accepted after a retry"}},
+  {"id": "inv-06", "title": "Runaway trap: EUR invoice and a faulty currency tool", "kind": "runaway",
+   "ocr_text": "FABRIKAM DESIGN GMBH\nRechnung / Invoice: FD-2026-118   Date: 14.11.2026\nBill to: Contoso CloudDesk Pvt Ltd\nItem                    Qty  Unit price  Amount\nUX research sprint      1    3,500.00    3,500.00\nPrototype testing       1    1,500.00    1,500.00\nTotal (EUR)                              5,000.00",
+   "expected": {"currency": "EUR", "total": 5000, "outcome": "handoff (the simulated currency tool always fails)"}}
+]

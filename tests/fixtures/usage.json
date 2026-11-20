@@ -1,0 +1,19 @@
+{
+  "uncached": {"prompt_tokens": 3600, "completion_tokens": 150, "completion_tokens_details": {"reasoning_tokens": 31}},
+  "write": {"prompt_tokens": 3600, "prompt_tokens_details": {"cache_write_tokens": 3074}, "completion_tokens": 150},
+  "read": {"prompt_tokens": 3600, "prompt_tokens_details": {"cached_tokens": 3074}, "completion_tokens": 150},
+  "small": {"prompt_tokens": 3600, "completion_tokens": 120},
+  "small_read": {"prompt_tokens": 3600, "prompt_tokens_details": {"cached_tokens": 3072}, "completion_tokens": 120},
+  "embedding": {"prompt_tokens": 21, "total_tokens": 21},
+  "decision": {"input_tokens": 45, "output_tokens": 2},
+  "extraction": {"prompt_tokens": 530, "completion_tokens": 310},
+  "review": {"prompt_tokens": 600, "completion_tokens": 8},
+  "probe": {"prompt_tokens": 10, "completion_tokens": 1},
+  "vectors": {
+    "rc-01": [1, 0, 0, 0, 0, 0], "rc-02": [0.96, 0, 0, 0, 0, 0.28],
+    "rc-03": [0.88, 0, 0, 0, 0, 0.475], "rc-04": [0, 1, 0, 0, 0, 0],
+    "rc-05": [0, 0.96, 0, 0, 0, 0.28], "rc-06": [0, 0.88, 0, 0, 0, 0.475],
+    "rc-07": [0, 0, 1, 0, 0, 0], "rc-08": [0, 0, 0.96, 0, 0, 0.28],
+    "rc-09": [0.82, 0, 0, 0, 0, 0.572], "rc-10": [0, 0, 0, 1, 0, 0]
+  }
+}

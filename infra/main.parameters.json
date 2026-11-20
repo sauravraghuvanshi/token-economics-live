@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {"value": "${AZURE_ENV_NAME}"},
+    "location": {"value": "${AZURE_LOCATION}"},
+    "createFoundry": {"value": "${CREATE_FOUNDRY=false}"},
+    "deployModels": {"value": "${DEPLOY_MODELS=false}"},
+    "foundryResourceId": {"value": "${FOUNDRY_RESOURCE_ID=}"},
+    "azureOpenAIBaseUrl": {"value": "${AZURE_OPENAI_BASE_URL=}"},
+    "foundryEndpoint": {"value": "${FOUNDRY_ENDPOINT=}"},
+    "foundryUserRoleId": {"value": "${FOUNDRY_USER_ROLE_ID}"},
+    "cognitiveServicesUserRoleId": {"value": "${COGNITIVE_SERVICES_USER_ROLE_ID=}"},
+    "vaultSecretsUserRoleId": {"value": "${VAULT_SECRETS_USER_ROLE_ID}"},
+    "monitoringPublisherRoleId": {"value": "${MONITORING_PUBLISHER_ROLE_ID}"},
+    "demoAccessCode": {"value": "${DEMO_ACCESS_CODE}"},
+    "frontierDeployment": {"value": "${FRONTIER_DEPLOYMENT=gpt-6.1-sol}"},
+    "smallDeployment": {"value": "${SMALL_DEPLOYMENT=gpt-4.1-mini}"},
+    "routerDeployment": {"value": "${ROUTER_DEPLOYMENT=model-router}"},
+    "decisionDeployment": {"value": "${DECISION_DEPLOYMENT=decision-1.1}"},
+    "embeddingDeployment": {"value": "${EMBEDDING_DEPLOYMENT=text-embedding-3-small}"},
+    "tightKillSwitchUsd": {"value": "${TIGHT_KILL_SWITCH_USD=}"},
+    "naiveSimilarityThreshold": {"value": "${NAIVE_SIMILARITY_THRESHOLD=0.80}"}
+  }
+}

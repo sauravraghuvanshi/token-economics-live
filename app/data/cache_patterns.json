@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "product": "clouddesk",
+  "strip_phrases": ["please explain the policy", "could you clarify", "can you tell me", "i need general policy guidance", "please summarise the applicable rule"],
+  "patterns": [
+    {"topic": "refund_timing",
+     "match_all": [["refund", "रिफंड"], ["when", "appear", "arrive", "how long", "कब", "कितने दिन"]],
+     "params": {"destination": {"card": ["card", "कार्ड"], "account_credit": ["account credit", "as credit", "credit balance"]}}},
+    {"topic": "audit_export_window",
+     "match_all": [["audit"], ["export", "how far back", "window"]],
+     "params": {"plan": {"starter": ["starter"], "business": ["business"], "enterprise": ["enterprise"]}}},
+    {"topic": "sso_availability",
+     "match_all": [["single sign-on", "sso", "saml"], ["available", "support", "use", "included"]],
+     "params": {"plan": {"starter": ["starter"], "business": ["business"], "enterprise": ["enterprise"]}}}
+  ]
+}

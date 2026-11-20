@@ -1,0 +1,36 @@
+name: ci-deploy
+on:
+  push: {}
+  pull_request: {}
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      FOUNDRY_MODE: fake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: pip }
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: ruff check . && mypy app && pytest -q
+  deploy:
+    if: github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Azure/setup-azd@v2
+      - run: azd auth login --client-id "$AZURE_CLIENT_ID" --federated-credential-provider github --tenant-id "$AZURE_TENANT_ID"
+      - run: azd deploy --no-prompt

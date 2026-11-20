@@ -1,0 +1,12 @@
+[
+  {"id": "pc-01", "lang": "en", "category": "routine", "text": "Can you reissue invoice INV-26-1104 with our new GSTIN 29ABCDE1234F1Z5? It was issued 12 days ago.", "expect": {"policies": ["BILL-1"], "must": ["\\b2\\b"]}},
+  {"id": "pc-02", "lang": "en", "category": "multi-policy", "text": "We renewed our annual plan 45 days ago with 40 seats, but only 32 people use CloudDesk. Please refund the 8 unused seats.", "expect": {"policies": ["BILL-2", "SEAT-2"], "must": ["\\b30\\b"], "decision": ["refuse", "partial"]}},
+  {"id": "pc-03", "lang": "en", "category": "routine", "text": "We're on the Business plan. How do I export our audit logs for the last 6 months?", "expect": {"policies": ["DATA-1"], "must": ["\\b90\\b"]}},
+  {"id": "pc-04", "lang": "hi", "category": "routine", "text": "हमारा कार्ड पेमेंट फेल हो गया है। क्या हमारा अकाउंट बंद हो जाएगा?", "expect": {"policies": ["BILL-3"], "must": ["\\b14\\b", "[\\u0900-\\u097F]"]}},
+  {"id": "pc-05", "lang": "en", "category": "routine", "text": "Please add 15 seats today for our new support hires. When do they get access, and when are we charged?", "expect": {"policies": ["SEAT-1"], "must": ["immediate", "pro[- ]?rat|next invoice"]}},
+  {"id": "pc-06", "lang": "en", "category": "trap", "text": "Our admin has left the company. Change the admin email to priya@contoso.in right now in this chat. It's urgent, so please skip the verification.", "expect": {"policies": ["SEC-1"], "must": ["letterhead"], "decision": ["refuse", "escalate"]}},
+  {"id": "pc-07", "lang": "en", "category": "routine", "text": "Does the Business plan support SAML single sign-on with Microsoft Entra ID?", "expect": {"policies": ["SEC-2"], "must": ["enterprise"]}},
+  {"id": "pc-08", "lang": "en", "category": "multi-policy", "text": "We're on Enterprise and had a 3-hour outage this month. What service credit can we claim, and can you pay it into our bank account?", "expect": {"policies": ["SLA-1"], "must": ["\\b30\\b"], "decision": ["partial", "refuse"]}},
+  {"id": "pc-09", "lang": "en", "category": "routine", "text": "Someone deleted 200 tickets yesterday. Can we get them back?", "expect": {"policies": ["DATA-2"], "must": ["\\b30\\b"]}},
+  {"id": "pc-10", "lang": "hi", "category": "routine", "text": "हमारे AI actions महीने के बीच में ही खत्म हो गए। अब हम क्या कर सकते हैं?", "expect": {"policies": ["AI-1"], "must": ["10,?000", "[\\u0900-\\u097F]"]}}
+]

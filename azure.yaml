@@ -1,0 +1,9 @@
+name: token-economics-live
+infra:
+  provider: bicep
+  path: infra
+services:
+  web:
+    project: .
+    language: py
+    host: appservice

@@ -1,0 +1,26 @@
+{
+  "currency": "USD",
+  "unit": "per_1M_tokens",
+  "deployment_type": "GlobalStandard",
+  "verified_on": "2026-11-20",
+  "cache_write_additive": false,
+  "notes": "East US 2 USD retail meters, converted to USD/1M tokens where published per 1K. GPT-6.1 Sol short-context rates only. Cache-write rows replace ordinary input per the demo billing model; review with Azure billing if meter semantics change.",
+  "chat_models": [
+    {"key": "gpt-6.1-sol", "match": ["gpt-6.1-sol"], "input": 2.00, "cached_input": 0.10, "cache_write_30m": 2.50, "output": 10.00,
+     "source": "https://prices.azure.com/api/retail/prices — Azure OpenAI GPT6 6.1-sol ShortCo Inp / Cd Inp / Cd Wr / Opt Std Gl"},
+    {"key": "gpt-4.1-mini", "match": ["gpt-4.1-mini"], "input": 0.40, "cached_input": 0.10, "cache_write_30m": null, "output": 1.60,
+     "source": "https://prices.azure.com/api/retail/prices — Azure OpenAI gpt 4.1 mini Inp / cached Inp / Outp glbl"},
+    {"key": "gpt-4.1", "match": ["gpt-4.1"], "input": 2.00, "cached_input": 0.50, "cache_write_30m": null, "output": 8.00,
+     "source": "https://prices.azure.com/api/retail/prices — Azure OpenAI gpt 4.1 Inp / cached Inp / Outp glbl"},
+    {"key": "deepseek-v4.1-flash", "match": ["deepseek-v4.1-flash"], "input": 0.30, "cached_input": 0.006, "cache_write_30m": null, "output": 1.20,
+     "source": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/deepseek/ — DeepSeek V4.1 Flash Global (Instruction.md Appendix D; not in the demo router subset)"}
+  ],
+  "router": {"routing_fee_per_1M_input": 0.14, "verified": true,
+             "source": "https://prices.azure.com/api/retail/prices — Model Routers GL 1M Tokens"},
+  "decision": {"key": "microsoft-decision-1.1", "match": ["microsoft-decision-1.1"], "input": 0.042, "output": 0,
+               "source": "https://prices.azure.com/api/retail/prices — Decision 1.1 Gl 1M Tokens"},
+  "embeddings": [
+    {"key": "text-embedding-3-small", "match": ["text-embedding-3-small"], "input": 0.020,
+     "source": "https://prices.azure.com/api/retail/prices — text-embedding-3-small-glbl Tokens"}
+  ]
+}

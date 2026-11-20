@@ -1,0 +1,16 @@
+*
+!app/
+!app/**
+!config/
+!config/pricing.json
+!tests/
+!tests/fixtures/
+!tests/fixtures/**
+!replays/
+!replays/*.json
+!requirements.txt
+replays/*.fake.json
+__pycache__/
+*.py[cod]
+.env
+.env.*

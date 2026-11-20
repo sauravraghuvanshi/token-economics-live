@@ -1,0 +1,12 @@
+[
+  {"id": "rc-01", "lang": "en", "text": "Please explain the policy: an approved refund goes to my card. When should it appear?", "expect": {"policies": ["BILL-2"], "must": ["\\b5\\b", "\\b10\\b"]}, "guarded": "miss, store", "naive": "miss, store"},
+  {"id": "rc-02", "lang": "en", "text": "Could you clarify when an approved card refund will arrive?", "expect": {"policies": ["BILL-2"], "must": ["\\b5\\b", "\\b10\\b"]}, "guarded": "hit rc-01", "naive": "hit rc-01"},
+  {"id": "rc-03", "lang": "en", "text": "Please explain the policy: an approved refund goes to account credit. When should it appear?", "expect": {"policies": ["BILL-2"], "must": ["immediate"]}, "guarded": "miss, store", "naive": "wrong hit rc-01"},
+  {"id": "rc-04", "lang": "en", "text": "How far back can we export audit logs on the Business plan?", "expect": {"policies": ["DATA-1"], "must": ["\\b90\\b"]}, "guarded": "miss, store", "naive": "miss, store"},
+  {"id": "rc-05", "lang": "en", "text": "On Business, what is the audit-log export window?", "expect": {"policies": ["DATA-1"], "must": ["\\b90\\b"]}, "guarded": "hit rc-04", "naive": "hit rc-04"},
+  {"id": "rc-06", "lang": "en", "text": "How far back can we export audit logs on the Enterprise plan?", "expect": {"policies": ["DATA-1"], "must": ["\\b12\\b"]}, "guarded": "miss, store", "naive": "wrong hit rc-04"},
+  {"id": "rc-07", "lang": "en", "text": "Is single sign-on available on the Business plan?", "expect": {"policies": ["SEC-2"], "must": ["enterprise"]}, "guarded": "miss, store", "naive": "miss, store"},
+  {"id": "rc-08", "lang": "en", "text": "Can Business customers use SAML single sign-on?", "expect": {"policies": ["SEC-2"], "must": ["enterprise"]}, "guarded": "hit rc-07", "naive": "hit rc-07"},
+  {"id": "rc-09", "lang": "hi", "text": "कार्ड पर रिफंड कब तक आएगा?", "expect": {"policies": ["BILL-2"], "must": ["\\b5\\b", "\\b10\\b", "[\\u0900-\\u097F]"]}, "guarded": "miss, store (language is part of the key)", "naive": "may hit rc-01 and answer in English"},
+  {"id": "rc-10", "lang": "en", "text": "Our invoice has the wrong GSTIN and we also want a refund for unused seats.", "expect": {"policies": ["BILL-1", "BILL-2"]}, "guarded": "bypass, no single exact pattern", "naive": "may hit an unrelated entry"}
+]
