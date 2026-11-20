@@ -10,6 +10,8 @@ from pathlib import Path
 
 import httpx
 
+MODEL_KINDS = {"chat", "router", "embedding", "decision"}
+
 
 def events(client, run_id):
     with client.stream("GET", f"/api/runs/{run_id}/events") as response:
@@ -45,21 +47,29 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
         if row["status"] != "ok":
             failures.append(f"{row['request_id']} {row['lane']}: {'; '.join(row['miss_reasons'])}")
         elif any(not call.get("raw_usage") for call in row["calls"]
-                 if call["kind"] in {"chat", "router", "embedding", "decision"}):
+                 if call["kind"] in MODEL_KINDS):
             failures.append(f"{row['request_id']} {row['lane']}: missing usage.")
         elif row["totals"]["cost_usd"] is None or any(c["cost_usd"] is None for c in row["calls"]):
             failures.append(f"{row['request_id']} {row['lane']}: missing cost.")
         elif Decimal(row["totals"]["cost_usd"]) != sum(Decimal(c["cost_usd"]) for c in row["calls"]):
             failures.append(f"{row['request_id']} {row['lane']}: row cost does not match calls.")
+        elif any(value != sum(c["usage"][key] for c in row["calls"]) for key, value in row["totals"]["tokens"].items()):
+            failures.append(f"{row['request_id']} {row['lane']}: row tokens do not match call usage.")
     for lane in ("control", "candidate"):
         results = [r for r in rows if r["lane"] == lane]
         if [r["idx"] for r in results] != list(range(1, count + 1)):
             failures.append(f"{lane} lost or reordered a lane event.")
         else:
-            if summary[lane]["accepted"] != sum(r["pass"] for r in results):
+            final = summary[lane]
+            if final["accepted"] != sum(r["pass"] for r in results):
                 failures.append(f"{lane} accepted count does not match the row grades.")
+            if final["calls"] != sum(c["kind"] in MODEL_KINDS for r in results for c in r["calls"]):
+                failures.append(f"{lane} paid call count does not match rows.")
+            if any(value != sum(r["totals"]["tokens"][key] for r in results)
+                   for key, value in final["tokens"].items()):
+                failures.append(f"{lane} total tokens do not match rows.")
             if summary["complete"] and all(r["totals"]["cost_usd"] is not None for r in results):
-                if Decimal(summary[lane]["cost_usd"]) != sum(Decimal(r["totals"]["cost_usd"]) for r in results):
+                if Decimal(final["cost_usd"]) != sum(Decimal(r["totals"]["cost_usd"]) for r in results):
                     failures.append(f"{lane} total does not match rows.")
     if not summary["complete"]:
         failures.append("The run has incomplete totals.")
@@ -105,12 +115,19 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
             for key in ("rc-03/candidate", "rc-06/candidate"):
                 see(key, lambda r: r["wrong_hit"], f"Expected a wrong similarity hit: {key}")
         elif lever == "retry_killswitch":
-            expect = {"guardrails": "no new evidence", "no_retries": "no retries", "tight": "kill switch"}[mode]
+            stops = {"guardrails": {"no new evidence", "retry limit"}, "no_retries": {"no retries"},
+                     "tight": {"kill switch"}}[mode]
             for request_id in ("inv-03", "inv-06"):
-                see(f"{request_id}/control", lambda r: r["stop"] == "safety ceiling",
+                see(f"{request_id}/control", lambda r: r["stop"] == "safety ceiling" and r["attempts"] == 6,
                     f"{request_id} control did not reach the safety ceiling.")
-                see(f"{request_id}/candidate", lambda r: r["stop"] == expect,
-                    f"{request_id} candidate did not stop on {expect}.")
+                see(f"{request_id}/candidate", lambda r: r["stop"] in stops and not r["accepted"]
+                    and (r["attempts"] in (2, 3) if mode == "guardrails" else r["attempts"] == 1),
+                    f"{request_id} candidate did not hand off within the configured {mode} bound.")
+            if mode == "guardrails" and not any(
+                signal.get(f"{request_id}/candidate", {}).get("stop") == "no new evidence"
+                for request_id in ("inv-03", "inv-06")
+            ):
+                failures.append("No runaway invoice demonstrated a repeated evidence handoff.")
             for request_id in ("inv-01", "inv-04"):
                 see(f"{request_id}/candidate", lambda r: r["accepted"], f"{request_id} should be accepted.")
             if mode != "tight":
@@ -180,15 +197,16 @@ def main():
                                 or data[-1][0] != "run_completed" or data[-1][1]["summary"] != result["summary"]):
                             result["failures"].append("Replay differed from the recorded run.")
                     records.append(result)
+                    if opts.output:
+                        opts.output.parent.mkdir(exist_ok=True, parents=True)
+                        opts.output.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n",
+                                               encoding="utf-8")
                     c, a = result["summary"]["control"], result["summary"]["candidate"]
-                    print(f"{i + 1} {lever}/{mode} · {result['elapsed_seconds']}s · "
-                          f"accepted {c['accepted']}/{count} → {a['accepted']}/{count} · "
+                    print(f"{i + 1} {lever}/{mode} | {result['elapsed_seconds']}s | "
+                          f"accepted {c['accepted']}/{count} -> {a['accepted']}/{count} | "
                           f"{len(result['failures'])} validation issue(s)", flush=True)
                     for problem in result["failures"]:
                         print(f"  {problem}", flush=True)
-    if opts.output:
-        opts.output.parent.mkdir(exist_ok=True, parents=True)
-        opts.output.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if not records or any(r["failures"] for r in records):
         raise SystemExit(1)
 

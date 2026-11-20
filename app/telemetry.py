@@ -26,6 +26,7 @@ def setup(settings: Settings) -> None:
         kwargs["credential"] = DefaultAzureCredential()
     configure_azure_monitor(
         connection_string=connection_string, logger_name="tokecon", enable_live_metrics=False,
+        sampling_ratio=1.0,
         instrumentation_options={name: {"enabled": False} for name in
                                  ("azure_sdk", "django", "fastapi", "flask", "psycopg2",
                                   "requests", "urllib", "urllib3")}, **kwargs,

@@ -4,7 +4,7 @@
   "deployment_type": "GlobalStandard",
   "verified_on": "2026-11-20",
   "cache_write_additive": false,
-  "notes": "East US 2 USD retail meters, converted to USD/1M tokens where published per 1K. GPT-6.1 Sol short-context rates only. Cache-write rows replace ordinary input per the demo billing model; review with Azure billing if meter semantics change.",
+  "notes": "Global Standard USD retail meters verified in West US 3; embeddings use the published East US 2 Global Standard reference meter. Per-1K rates converted to per-1M. GPT-6.1 Sol short-context rates only. Cache-write rows replace ordinary input per the demo billing model.",
   "chat_models": [
     {"key": "gpt-6.1-sol", "match": ["gpt-6.1-sol"], "input": 2.00, "cached_input": 0.10, "cache_write_30m": 2.50, "output": 10.00,
      "source": "https://prices.azure.com/api/retail/prices — Azure OpenAI GPT6 6.1-sol ShortCo Inp / Cd Inp / Cd Wr / Opt Std Gl"},

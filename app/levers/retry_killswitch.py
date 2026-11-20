@@ -37,8 +37,12 @@ EXTRACT_SCHEMA = response_schema("invoice", {
 REVIEW_SCHEMA = response_schema("invoice_review", {"accepted": {"type": "string", "enum": ["yes", "no"]}})
 REVIEW = {
     "type": "noul",
-    "instructions": ("Is the extracted invoice ready for intake? Accept an arithmetic or amount-in-words "
-                     "correction to a misprinted number when the remaining fields support it."),
+    "instructions": (
+        "Does the extraction faithfully represent the source invoice, with only supported corrections? "
+        "Check the invoice identifiers, currency, quantities and unit prices against the source. When "
+        "printed amounts conflict, use the quantity times unit price, subtotal plus tax, or amount in "
+        "words to decide which number is supported. A supported correction is not a discrepancy."
+    ),
 }
 
 
@@ -113,6 +117,39 @@ def simulated_fx(value: Extraction | None) -> dict[str, Any]:
     return {"error": f"FX_RATE_UNAVAILABLE:{value.currency}"}
 
 
+def retry_evidence(value: Extraction | None, errors: list[str]) -> str:
+    if value is None:
+        return ""
+    checks = [
+        f"LINE_MISMATCH:{index}: quantity {line.qty:g} times unit price {line.unit_price:g} "
+        f"equals {decimal(line.qty) * decimal(line.unit_price)}, not the extracted amount {line.amount:g}."
+        for index, line in enumerate(value.line_items, start=1)
+        if f"LINE_MISMATCH:{index}" in errors
+    ]
+    if checks:
+        checks.append("If the printed quantity and unit price are clear, use their product as the line amount "
+                      "before reconciling the subtotal and taxes.")
+    if any(error.startswith("FX_RATE_UNAVAILABLE:") for error in errors):
+        checks.append("The FX rate is unavailable in the simulated tool. This is not an extraction error; "
+                      "keep the printed currency and amounts.")
+    return "\n\nValidator diagnostics from the previous extraction:\n" + "\n".join(checks) if checks else ""
+
+
+def review_state(invoice: Invoice, value: Extraction) -> dict[str, Any]:
+    line_amounts = [decimal(line.qty) * decimal(line.unit_price) for line in value.line_items]
+    subtotal = decimal(value.subtotal) if value.subtotal is not None else sum(line_amounts, Decimal(0))
+    tax = sum((decimal(row.amount) for row in value.taxes), Decimal(0))
+    return {
+        "ocr_text": invoice.ocr_text,
+        "extraction": value.model_dump(mode="json"),
+        "validator_arithmetic": {
+            "line_amounts_from_qty_times_unit_price": [str(amount) for amount in line_amounts],
+            "subtotal_from_lines": str(sum(line_amounts, Decimal(0))),
+            "total_from_subtotal_plus_tax": str(subtotal + tax),
+        },
+    }
+
+
 async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple[dict[str, Any], str, list[str]]:
     prior = None
     output: Extraction | None = None
@@ -128,12 +165,14 @@ async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple
         before = calls.tokens["prompt"] + calls.tokens["completion"]
         ctx = replace(calls.context, attempt=num)
         instructions = EXTRACTOR
+        evidence = ""
         if num > 1:
             instructions += "\n\n" + RETRY.format(
                 errors=", ".join(errors), previous=output.model_dump_json() if output else "null")
+            evidence = retry_evidence(output, errors)
         result = await calls.invoke("chat", cfg.small_deployment, {
             "messages": [{"role": "system", "content": instructions},
-                         {"role": "user", "content": invoice.ocr_text}],
+                         {"role": "user", "content": invoice.ocr_text + evidence}],
             "response_format": EXTRACT_SCHEMA, "max_completion_tokens": 700,
         }, context=ctx)
         try:
@@ -150,7 +189,7 @@ async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple
         calls.role("validator", {"errors": list(errors)})
         review_score = None
         if not errors and output is not None:
-            state = {"ocr_text": invoice.ocr_text, "extraction": output.model_dump(mode="json")}
+            state = review_state(invoice, output)
             if cfg.decision_deployment:
                 d = await calls.invoke("decision", cfg.decision_deployment,
                                        {"state": state, "questions": {"accepted": REVIEW}}, context=ctx)

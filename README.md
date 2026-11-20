@@ -41,6 +41,11 @@ both projector sizes with external browser requests blocked.
 
 ## Azure configuration and deployment
 
+The [hosted demo](https://app-tokecon-q7yxpkuusfxba.azurewebsites.net/) runs in
+`rg-tokecon-demo` in **West US 3**. East US 2 lacked usable App Service regional
+quota. The deployment uses a dedicated Foundry account and does not change the
+existing East US 2 account.
+
 Requires Azure CLI, Azure Developer CLI (`azd`), a subscription, and permission
 to provision the resources and assign roles at their scopes. Sign in as the
 operator using `az login` and `azd auth login`. For local Live runs you also need
@@ -92,7 +97,31 @@ Provisioning uses one Linux P0v3 instance with one Gunicorn/Uvicorn worker.
 Do not scale workers or instances: the run registry, active-run guard and cache
 are process-local. `/home/data` persists the rolling model spend ledger, run
 recordings and scoreboard. The hourly ledger limits inference, not the hosting
-bill. The App Service plan continues to incur charges even after the demo.
+bill. The App Service plan and private endpoint together cost about **$64 per
+730 hours** at list rates, before usage, DNS, Key Vault and monitoring.
+
+The managed identity reaches the vault through VNet integration and a private
+endpoint. Public vault access remains disabled. For the hosted demo, use the
+`demo-access-code` secret in `kv-tok-q7yxpkuusfxba` from an authorized account
+on the private network. On the original Windows account, the local encrypted
+copy is `.azure\tokecon-demo\demo-access-code.dpapi`. To smoke-test with it,
+decrypt it only into the PowerShell 7 process environment:
+
+```powershell
+$url = 'https://app-tokecon-q7yxpkuusfxba.azurewebsites.net'
+$code = ConvertTo-SecureString (Get-Content -Raw '.azure\tokecon-demo\demo-access-code.dpapi').Trim()
+try {
+    $env:DEMO_ACCESS_CODE = ConvertFrom-SecureString $code -AsPlainText
+    .\.venv\Scripts\python.exe -m scripts.smoke_test --base-url $url
+} finally {
+    Remove-Item Env:\DEMO_ACCESS_CODE -ErrorAction SilentlyContinue
+    $code.Dispose()
+}
+```
+
+In the browser, enter the same code in the app's access dialog after pressing
+**Run**. Use only a private terminal or the vault to retrieve the value. Do
+not paste it into chat or put it in a slide. Replay doesn't require the code.
 
 The app must return `ok` at `/healthz`; `/api/status` must list all five models
 as `ok` and report verified prices without missing meters. The startup probes
@@ -103,6 +132,8 @@ status refresh is limited to once per minute.
 After provisioning, connect the designated GitHub repository with
 `azd pipeline config`. The workflow runs offline tests and uses federated
 authentication for deploys from `main`. CI never runs the live smoke test.
+A GitHub remote has not been designated, so the workflow is not connected
+and no pull request has been opened.
 
 ## Verify real usage and dry-run the demo
 
@@ -120,15 +151,18 @@ authentication for deploys from `main`. CI never runs the live smoke test.
    supplied defaults), not an undocumented one-request API bypass. Enter the
    access code at the hidden prompt or supply it in a process environment.
 3. Use a ten-request **Naive similarity** run to measure similarity at `rc-03`
-   and `rc-06`. Tune `NAIVE_SIMILARITY_THRESHOLD` to reproduce both wrong hits
-   without hiding the intended correct examples. Five requests won't show
-   `rc-06`. Confirm **Fact-guarded** preserves the plan, refund destination
-   and language; `rc-10` should bypass.
+   and `rc-06`. The wrong matches scored 0.8933 and 0.9166, while intended
+   paraphrases scored as low as 0.6708. The calibrated
+   `NAIVE_SIMILARITY_THRESHOLD=0.66` keeps both wrong hits and the paraphrase
+   hits. Five requests won't show `rc-06`. Confirm **Fact-guarded** preserves
+   the plan, refund destination and language; `rc-10` should bypass.
 4. Measure the first and later candidate attempts for the runaway invoices
    in **New evidence + guardrails**. Set `TIGHT_KILL_SWITCH_USD` using the
-   measured spend so that tight mode stops early and hands off. It stops
-   between attempts, not partway through a model call. Repeat to check that
-   recoverable invoices still illustrate the trade-off.
+   measured spend so that tight mode stops early and hands off. First attempts
+   on the runaway invoices cost $0.0002912–$0.0003072 in calibration, so this
+   deployment uses `TIGHT_KILL_SWITCH_USD=0.00025`. It checks the budget after
+   a failed attempt, not partway through a model call. This tight limit can
+   also stop a recoverable invoice before a second attempt.
 5. Run all nine modes twice at maximum size and keep the JSON evidence. Confirm
    ten-request timings against the 90-second target; show real misses in
    Inspect and report them rather than adjusting the grader. In particular,
@@ -139,15 +173,17 @@ authentication for deploys from `main`. CI never runs the live smoke test.
 ```powershell
 $url = 'https://<app-host>'
 python -m scripts.smoke_test --base-url $url
-python -m scripts.smoke_test --base-url $url --rounds 2 --max-counts --assert-stories --verify-replays --output .data\live-dry-run.json
+python -m scripts.smoke_test --base-url $url --rounds 2 --max-counts --assert-stories --output .data\live-dry-run.json
 python -m scripts.export_replays --base-url $url
 ```
 
 The smoke check verifies real model usage, event order, exact call/row/KPI sums
 and accepted counts. It reports observed grades and timing, not a guarantee of
 identical model answers. If the tight budget is unset, it prints that tight mode
-was skipped. Do not sign off the dry run without all nine modes. Replay uses
-original event timing (halved in the smoke check) and makes no inference calls.
+was skipped. Do not sign off the dry run without all nine modes. Capture a
+Live Scoreboard screenshot before playing any recordings: Replay updates the
+Scoreboard with a Replay badge. Replay uses original event timing and makes no
+inference calls. Use `--verify-replays` to check Replay over HTTPS at 2× speed.
 
 In Application Insights **Logs**, verify model calls and completed runs:
 
@@ -186,13 +222,47 @@ customEvents
   credentials, then play the exported recordings from `replays/`. Check this
   on the presenting laptop offline before the event.
 
-## Verification status
+## Azure dry run — 20 November 2026
 
-| Check | Result |
+Two maximum-size Live runs per mode completed with priced model usage, ordered
+SSE, matching call/row/KPI totals, and no validation errors in the final suite.
+The three retry modes were repeated after giving the Decision reviewer the
+validator's arithmetic. The 18 verified runs used 462 model calls and cost
+**$0.41648 at the configured list rates**, excluding calibration, hosting,
+monitoring, and the separate browser run.
+
+| Live mode | Time, run 1 / run 2 | Accepted, control → candidate | Observed result |
+|---|---:|---|---|
+| Prompt caching | 38.62s / 40.61s | 10/10 → 10/10, both | 75.4–75.5% lower cost with a warm prefix. |
+| Foundry model router | 33.03s / 28.06s | 9/10 → 10/10; 9/10 → 9/10 | Selected model and per-call routing fee visible. |
+| Decision router | 34.36s / 33.34s | 9/10 → 9/10, both | Both tiers used; `mr-03` and `mr-05` escalated. |
+| Small model for all | 32.34s / 28.56s | 9/10 → 9/10; 9/10 → 10/10 | Cost per accepted outcome fell. Aggregate quality loss did not reproduce. |
+| Fact-guarded cache | 23.55s / 25.61s | 10/10 → 10/10, both | Three model calls skipped; `rc-10` bypassed. |
+| Naive similarity | 25.47s / 24.64s | 10/10 → 8/10, both | Wrong hits on `rc-03` and `rc-06` despite lower cost. |
+| New evidence + guardrails | 32.39s / 31.75s | 4/6 → 4/6, both | 22 → 16 paid calls; runaway invoices handed off on repeated evidence. |
+| No retries | 32.01s / 33.06s | 4/6 → 2/6, both | Both recoverable invoices were handed off on the first failure. |
+| Tight kill switch | 31.36s / 38.20s | 4/6 → 2/6, both | Spend guard stopped failed documents after one attempt. |
+
+All ten-request runs took less than 41 seconds (target: 90 seconds). For model
+routing, `mr-05` expects PostgreSQL advice even though the required system
+prompt says to answer only from the policy corpus. The frontier model's
+abstention remained a miss under the specified grader. Small-only missed
+`mr-09` in one run but did not lower aggregate acceptance. Don't present
+small-only as a guaranteed quality penalty.
+
+During calibration, a corrected `inv-05` was rejected by the Decision reviewer.
+Passing the validator's arithmetic to the reviewer let the supported correction
+pass at the unchanged 0.7 threshold. When a runaway invoice alternates between
+different extractions, the retry limit can stop it instead of the repeated-evidence
+check; both exits hand off to a person.
+
+| Check | Evidence |
 |---|---|
-| Local build | Ruff and mypy clean; 23 pytest tests passed. The Bicep compiles and the azd package includes runtime files and Fake fixtures without local tooling, caches, or environment files. The stable prefix measured 1,849 tokens. |
-| Repeated demo checks | All nine modes run twice at maximum size with synthetic data. Edge passed the presenter workflow at 1366×768 and 1920×1080. Replay matched the final KPIs and retained Fake provenance. |
-| Azure and handoff | No Azure resources were created. Live latency, telemetry, calibrated thresholds and genuine recordings are not verified. Azure target approval and a designated GitHub remote are outstanding. |
+| Deployment and controls | HTTPS `/healthz` returned `ok`; all five deployments responded with managed identity; no missing prices. Unauthenticated Start returned 401, a second active Start returned 409, and the $2 rolling-hour inference cap passed local persistence tests. Key Vault access stayed private. |
+| Cost and telemetry | Pricing and usage tests passed, including every §8.3 example. The App Insights queries returned real dependencies and `run_completed` events for all nine modes. |
+| Presenter UI | Edge passed the hosted layout and all How-to panels at 1366×768 and 1920×1080. Hosted playback preserved the real summary and Inspect showed raw usage. A separate browser run verified the access dialog, live KPIs, and the nine Live Scoreboard rows. |
+| Offline handoff | The nine genuine recordings in [`replays/`](replays/) replayed the same rows and KPIs with both model clients and DNS disabled. A Live Scoreboard backup was captured before playback. |
+| Local regression checks | Ruff, mypy, and JavaScript syntax checks passed; 24 pytest tests passed. All nine Fake modes passed twice at maximum size and in Edge at both projector sizes. The stable prefix measured 1,849 tokens. |
 
 In the repeated **Fake** runs, the fact-guarded cache accepted 10/10 requests
 versus 7/10 for naive similarity. Evidence-based retries accepted 4/6 invoices

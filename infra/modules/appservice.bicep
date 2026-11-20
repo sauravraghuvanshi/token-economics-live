@@ -12,12 +12,45 @@ resource insights 'Microsoft.Insights/components@2020-02-02' existing = {
   name: insightsName
 }
 
+resource network 'Microsoft.Network/virtualNetworks@2023-11-01' = {
+  name: 'vnet-tokecon-${name}'
+  location: location
+  tags: tags
+  properties: {
+    addressSpace: { addressPrefixes: ['10.70.0.0/24'] }
+  }
+}
+
+resource appSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
+  parent: network
+  name: 'app-integration'
+  properties: {
+    addressPrefix: '10.70.0.0/26'
+    delegations: [
+      {
+        name: 'app-service'
+        properties: { serviceName: 'Microsoft.Web/serverFarms' }
+      }
+    ]
+  }
+}
+
+resource endpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
+  parent: network
+  name: 'private-endpoints'
+  properties: {
+    addressPrefix: '10.70.0.64/26'
+    privateEndpointNetworkPolicies: 'Disabled'
+  }
+  dependsOn: [appSubnet]
+}
+
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: 'plan-tokecon-${name}'
   location: location
   kind: 'linux'
   tags: tags
-  sku: { name: 'P0v3', tier: 'Premium0V3', capacity: 1 }
+  sku: { name: 'P0v3', tier: 'PremiumV3', capacity: 1 }
   properties: {
     reserved: true
   }
@@ -32,7 +65,55 @@ resource vault 'Microsoft.KeyVault/vaults@2024-11-01' = {
     tenantId: tenant().tenantId
     enableRbacAuthorization: true
     enablePurgeProtection: true
+    publicNetworkAccess: 'Disabled'
     softDeleteRetentionInDays: 7
+  }
+}
+
+resource vaultEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = {
+  name: 'pe-tok-vault-${name}'
+  location: location
+  tags: tags
+  properties: {
+    subnet: { id: endpointSubnet.id }
+    privateLinkServiceConnections: [
+      {
+        name: 'key-vault'
+        properties: {
+          privateLinkServiceId: vault.id
+          groupIds: ['vault']
+        }
+      }
+    ]
+  }
+}
+
+resource vaultDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.vaultcore.azure.net'
+  location: 'global'
+  tags: tags
+}
+
+resource vaultDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: vaultDns
+  name: 'demo-vnet'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: network.id }
+    registrationEnabled: false
+  }
+}
+
+resource vaultDnsRecords 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: vaultEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'vault'
+        properties: { privateDnsZoneId: vaultDns.id }
+      }
+    ]
   }
 }
 
@@ -53,6 +134,8 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
   identity: { type: 'SystemAssigned' }
   properties: {
     serverFarmId: plan.id
+    virtualNetworkSubnetId: appSubnet.id
+    vnetRouteAllEnabled: true
     httpsOnly: true
     clientAffinityEnabled: true
     siteConfig: {
@@ -99,7 +182,7 @@ resource settings 'Microsoft.Web/sites/config@2024-04-01' = {
     APPLICATIONINSIGHTS_CONNECTION_STRING: insights.properties.ConnectionString
     DEMO_ACCESS_CODE: '@Microsoft.KeyVault(VaultName=${vault.name};SecretName=${accessCode.name})'
   })
-  dependsOn: [vaultRole, monitorRole]
+  dependsOn: [vaultRole, monitorRole, vaultDnsLink, vaultDnsRecords]
 }
 
 output url string = 'https://${app.properties.defaultHostName}'

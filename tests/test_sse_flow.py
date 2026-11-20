@@ -124,6 +124,16 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
             assert len(candidate[2]["lever_detail"]["attempts"]) == 2
             assert candidate[2]["lever_detail"]["stop"] == "no new evidence"
             assert candidate[1]["pass"] and candidate[4]["pass"]
+            extracts = [call["sent"]["messages"][1]["content"] for call in candidate[4]["calls"]
+                        if call["kind"] == "chat"]
+            assert "Validator diagnostics" not in extracts[0]
+            assert "quantity 1 times unit price 6000 equals 6000.00, not the extracted amount 9000." in extracts[1]
+            review, = [call for call in candidate[4]["calls"] if call["kind"] == "decision"]
+            reconciliation = review["sent"]["state"]["validator_arithmetic"]
+            assert [Decimal(amount) for amount in reconciliation["line_amounts_from_qty_times_unit_price"]] == [
+                Decimal("42000"), Decimal("6000"),
+            ]
+            assert Decimal(reconciliation["total_from_subtotal_plus_tax"]) == Decimal("56640")
         else:
             assert len(candidate[2]["lever_detail"]["attempts"]) == 1
             assert not candidate[1]["pass"]
