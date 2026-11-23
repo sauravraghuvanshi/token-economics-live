@@ -1,6 +1,7 @@
 """Runtime configuration. Entra endpoints are validated before sending credentials."""
 
 import os
+import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -12,11 +13,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def valid_project_endpoint(url: str) -> bool:
+    try:
+        target = urlsplit(url)
+        return bool(target.scheme == "https" and target.hostname
+                    and target.hostname.endswith(".services.ai.azure.com")
+                    and target.port in (None, 443) and target.username is None and target.password is None
+                    and not target.query and not target.fragment
+                    and re.fullmatch(r"/api/projects/[A-Za-z0-9][A-Za-z0-9-]{0,62}/?", target.path))
+    except ValueError:
+        return False
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     azure_openai_base_url: str = ""
     foundry_endpoint: str = ""
+    foundry_project_endpoint: str = ""
+    azure_tenant_id: str = ""
     azure_token_scope: Literal["https://cognitiveservices.azure.com/.default"] = (
         "https://cognitiveservices.azure.com/.default"
     )
@@ -26,7 +41,7 @@ class Settings(BaseSettings):
     decision_deployment: str = "decision-1.1"
     embedding_deployment: str = "text-embedding-3-small"
     prompt_cache_mode: Literal["explicit", "auto"] = "explicit"
-    prompt_cache_key: str = "clouddesk:policies:v1"
+    prompt_cache_key: str = "clouddesk:policies:v2"
     default_request_count: int = 5
     min_request_count: int = Field(default=5, ge=5, le=10)
     max_request_count: int = Field(default=10, ge=5, le=10)
@@ -96,6 +111,8 @@ class Settings(BaseSettings):
                 return f"Set {field} to the approved Azure resource endpoint."
         if not all(name for role, name in self.deployments.items() if role != "decision"):
             return "Configure all required model deployment names."
+        if not valid_project_endpoint(self.foundry_project_endpoint):
+            return "Set FOUNDRY_PROJECT_ENDPOINT to the approved Azure project endpoint with the demo agents."
         if self.router_deployment.lower() == "auto":
             return "Configure a dedicated model-router deployment; do not use auto."
         if not self.access_code_configured:

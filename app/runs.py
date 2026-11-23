@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from .calls import CallSession
-from .dataset import Dataset, Invoice, Request
+from .dataset import WORKLOAD_VERSION, Dataset, Invoice, Request
 from .foundry import CallContext, ModelClient, ModelError
 from .grading import grade, parse_answer
 from .guards import SpendLimit, SpendWindow
@@ -158,6 +158,7 @@ class Demo:
         try:
             self.recordings.update_scoreboard({
                 "lever": run.lever, "mode": run.mode, "count": run.count, "source": run.source,
+                "workload_version": WORKLOAD_VERSION,
                 "results_source": run.recording_source or run.source, "started_at": run.started_at,
                 "recorded_at": run.recorded_at, "summary": run.summary,
             })
@@ -225,6 +226,7 @@ class Demo:
             if run.lever == "response_cache":
                 self.cache.clear(run.mode)
             run.emit("run_started", {"lever": run.lever, "mode": run.mode, "count": run.count,
+                                     "workload_version": WORKLOAD_VERSION,
                                      "started_at": run.started_at, "source": run.source,
                                      "prices_verified": self.prices_verified})
             for index, row in enumerate(self.workload(run.lever)[:run.count]):
@@ -246,7 +248,8 @@ class Demo:
                                "data": {"run_id": run.id, "summary": run.summary, "saved_replay": True}}
                 try:
                     self.recordings.save({
-                        "schema": 1, "lever": run.lever, "mode": run.mode, "count": run.count,
+                        "schema": 1, "workload_version": WORKLOAD_VERSION, "lever": run.lever,
+                        "mode": run.mode, "count": run.count,
                         "source": run.source, "started_at": run.started_at, "summary": run.summary,
                         "events": [*run.events, final_event],
                     })

@@ -1,10 +1,11 @@
 # Token Economics · Live
 
-Compare four runtime AI cost levers on the same fictional CloudDesk workload. The
-dashboard streams both lanes, prices measured usage token by token, and grades
-each outcome without a model judge. Keep a change only if cost per accepted
-outcome falls and quality holds. See [Instruction.md](Instruction.md) for the
-workloads, exact formulas, and acceptance criteria.
+Compare four AI cost levers on the same English-language CloudDesk workload.
+Each page explains **Without the lever**, **With the lever**, and **What to
+look for**. The run ledger then explains what happened using measured costs and
+grades. Keep a change only if cost per accepted outcome falls and quality holds.
+See [Instruction.md](Instruction.md) for the original design and pricing rules.
+The current English workload supersedes the original multilingual examples.
 
 ## Run locally
 
@@ -36,8 +37,8 @@ $env:FOUNDRY_MODE = 'fake'
 
 For browser verification, install `playwright==1.58.0` in the same environment
 and run `python -m scripts.browser_test --channel msedge`. Alternatively, run
-`python -m playwright install chromium` and omit `--channel`. The checks cover
-both projector sizes with external browser requests blocked.
+`python -m playwright install chromium` and omit `--channel`. Both typefaces
+are self-hosted with their open font licenses; playback needs no CDN.
 
 ## Azure configuration and deployment
 
@@ -67,6 +68,7 @@ azd env set AZURE_SUBSCRIPTION_ID $sub
 azd env set AZURE_LOCATION '<approved region>'
 azd env set FOUNDRY_RESOURCE_ID '<existing account ARM resource ID>'
 azd env set FOUNDRY_ENDPOINT 'https://<resource>.services.ai.azure.com'
+azd env set FOUNDRY_PROJECT_ENDPOINT 'https://<resource>.services.ai.azure.com/api/projects/<project>'
 azd env set AZURE_OPENAI_BASE_URL 'https://<resource>.openai.azure.com/openai/v1/'
 azd env set FOUNDRY_USER_ROLE_ID (az role definition list --subscription $sub --name 'Foundry User' --query '[0].name' -o tsv)
 azd env set VAULT_SECRETS_USER_ROLE_ID (az role definition list --subscription $sub --name 'Key Vault Secrets User' --query '[0].name' -o tsv)
@@ -87,11 +89,42 @@ Git, a shell command argument, or build logs.
 ```powershell
 $env:DEMO_ACCESS_CODE = Read-Host -MaskInput 'Demo access code'
 try {
-    azd up --no-prompt
+    azd provision --no-prompt
 } finally {
     Remove-Item Env:\DEMO_ACCESS_CODE -ErrorAction SilentlyContinue
 }
 ```
+
+For a new environment, publish the agents before deploying the web package.
+Use the exact project endpoint and directory returned by Azure (the provision
+step also exports `FOUNDRY_PROJECT_ENDPOINT`):
+
+```powershell
+python -m scripts.sync_agents --project-endpoint '<confirmed project endpoint>' --tenant-id '<directory ID>' --apply
+azd deploy web --no-prompt
+```
+
+In [Foundry](https://ai.azure.com/), open **Token Economics Live** (`token-economics-live`),
+go to **Agents**, and filter by `tokecon-`:
+
+| Workload | Without the lever | With the lever |
+|---|---|---|
+| Support | `tokecon-support-baseline` | `tokecon-support-lever`; `tokecon-support-lever-small` for the small tier; `tokecon-support-lever-router` for Foundry routing |
+| Invoices | `tokecon-invoice-baseline` | `tokecon-invoice-lever` |
+
+These are real Prompt Agents, not labels on shared model calls. The server
+pins each active version and checks the `agent_reference` returned by Foundry.
+**Inspect** shows the name, version and response ID alongside raw token usage.
+The app runs the cache, routing decisions, validation, simulated currency
+conversion and retry policy around those agents. It can recover an omitted
+subtotal from a single printed field only when the line amounts and total
+independently agree. On retry it recalculates derived amounts only if a second
+extraction confirms the printed inputs. The validator and Decision reviewer
+still have to pass; Inspect shows raw extraction and arithmetic evidence
+separately. A response-cache hit skips the answer agent. Use `scripts.sync_agents`
+without `--apply` to verify the live definitions without editing them. For local
+Live runs in a nondefault directory, set `AZURE_TENANT_ID` to use an explicit
+Azure CLI credential.
 
 Provisioning uses one Linux P0v3 instance with one Gunicorn/Uvicorn worker.
 Do not scale workers or instances: the run registry, active-run guard and cache
@@ -124,7 +157,7 @@ In the browser, enter the same code in the app's access dialog after pressing
 not paste it into chat or put it in a slide. Replay doesn't require the code.
 
 The app must return `ok` at `/healthz`; `/api/status` must list all five models
-as `ok` and report verified prices without missing meters. The startup probes
+and six agents as `ok` and report verified prices without missing meters. The startup probes
 use managed identity and can take time after a fresh deployment or a role
 change. Unauthenticated status reads do not trigger inference. A code-authenticated
 status refresh is limited to once per minute.
@@ -155,7 +188,8 @@ and no pull request has been opened.
    paraphrases scored as low as 0.6708. The calibrated
    `NAIVE_SIMILARITY_THRESHOLD=0.66` keeps both wrong hits and the paraphrase
    hits. Five requests won't show `rc-06`. Confirm **Fact-guarded** preserves
-   the plan, refund destination and language; `rc-10` should bypass.
+   the plan and refund destination; `rc-09` is an additional English card-refund
+   paraphrase, and the two-topic `rc-10` should bypass.
 4. Measure the first and later candidate attempts for the runaway invoices
    in **New evidence + guardrails**. Set `TIGHT_KILL_SWITCH_USD` using the
    measured spend so that tight mode stops early and hands off. First attempts
@@ -163,27 +197,32 @@ and no pull request has been opened.
    deployment uses `TIGHT_KILL_SWITCH_USD=0.00025`. It checks the budget after
    a failed attempt, not partway through a model call. This tight limit can
    also stop a recoverable invoice before a second attempt.
-5. Run all nine modes twice at maximum size and keep the JSON evidence. Confirm
-   ten-request timings against the 90-second target; show real misses in
-   Inspect and report them rather than adjusting the grader. In particular,
-   `mr-05` expects PostgreSQL advice even though the exact role prompt limits
-   answers to the supplied policies. Check the router's selected models and
-   fees, both Decision tiers, and the fault-labelled FX retry chain.
+5. Run all nine modes five times at maximum size and keep the JSON evidence.
+   Confirm ten-request timings against the 90-second target. `mr-05` now asks
+   for a calculation backed by the policy corpus. Check the router's selected
+   models and fees, both Decision tiers, and the fault-labelled FX retry chain.
+   Naive reuse, no retries and tight budgets should lose expected outcomes;
+   never treat those intentional misses as a broken demo. Report Small-only
+   quality as measured, not as a guaranteed drop.
 
 ```powershell
 $url = 'https://<app-host>'
 python -m scripts.smoke_test --base-url $url
-python -m scripts.smoke_test --base-url $url --rounds 2 --max-counts --assert-stories --output .data\live-dry-run.json
+python -m scripts.smoke_test --base-url $url --rounds 5 --max-counts --assert-stories --fail-fast --output .data\live-verification.json
 python -m scripts.export_replays --base-url $url
+python -m scripts.browser_test --base-url $url --source live --channel msedge
 ```
 
-The smoke check verifies real model usage, event order, exact call/row/KPI sums
-and accepted counts. It reports observed grades and timing, not a guarantee of
-identical model answers. If the tight budget is unset, it prints that tight mode
-was skipped. Do not sign off the dry run without all nine modes. Capture a
-Live Scoreboard screenshot before playing any recordings: Replay updates the
-Scoreboard with a Replay badge. Replay uses original event timing and makes no
-inference calls. Use `--verify-replays` to check Replay over HTTPS at 2× speed.
+The smoke check verifies real model usage, agent identity, event order, exact
+call/row/KPI sums, invoice fields and accepted counts. It reports observed
+grades and timing, not a guarantee of identical model answers. Full story
+verification requires all nine modes, including the configured tight budget.
+The browser check uses a process-local `DEMO_ACCESS_CODE`. It checks all
+briefs and both self-hosted fonts at 1920×1080, 1366×768 and 390×844, then
+exercises Replay, the access dialog, live streaming and agent receipts.
+Capture a Live Scoreboard screenshot before playing recordings: Replay
+updates the board with a Replay badge. Replay uses original event timing and
+makes no inference calls. Use `--verify-replays` to check HTTPS Replay at 2× speed.
 
 In Application Insights **Logs**, verify model calls and completed runs:
 
@@ -191,8 +230,9 @@ In Application Insights **Logs**, verify model calls and completed runs:
 dependencies
 | where timestamp > ago(1d) and isnotempty(customDimensions.lever)
 | extend lever = tostring(customDimensions.lever), lane = tostring(customDimensions.lane),
-         model = tostring(customDimensions.response_model), cost = todouble(customDimensions.cost_usd)
-| summarize calls = count(), cost_usd = sum(cost) by lever, lane, model
+         agent = tostring(customDimensions.foundry_agent), model = tostring(customDimensions.response_model),
+         cost = todouble(customDimensions.cost_usd)
+| summarize calls = count(), cost_usd = sum(cost) by lever, lane, agent, model
 | order by lever asc, lane asc
 ```
 
@@ -222,7 +262,53 @@ customEvents
   credentials, then play the exported recordings from `replays/`. Check this
   on the presenting laptop offline before the event.
 
-## Azure dry run — 20 November 2026
+## Hosted verification — 23 November 2026
+
+The `english-foundry-v5` deployment passed **45 of 45** end-to-end comparisons
+across five full rounds on the same release. Each support run compared 10
+requests; each invoice run compared six documents. In total, the 390 paired
+workloads used 1,130 paid calls, measured at **$1.098674620** at configured
+list rates, excluding calibration, hosting, monitoring and the separate
+browser run. All 30 ten-request runs finished within 52.20 seconds (target:
+90 seconds). Application Insights confirmed all 45 run IDs and recorded
+distinct agent names, versions and lanes.
+
+| Live mode | Accepted, without → with | Behavior checks | Duration | Cost per accepted outcome, lower by |
+|---|---:|---:|---:|---:|
+| Prompt caching | 10/10 → 10/10 | 5/5 | 42.20–52.20 s | 74.0–76.9% |
+| Foundry model router | 10/10 → 10/10 | 5/5 | 37.84–46.23 s | 52.2–57.1% |
+| Decision router | 10/10 → 10/10 | 5/5 | 38.56–42.84 s | 23.4–33.0% |
+| Small model for all | 10/10 → 9/10 once, 10/10 four times | 5/5 | 34.81–42.33 s | 66.6–74.6% |
+| Fact-guarded cache | 10/10 → 10/10 | 5/5 | 33.94–41.00 s | 23.8–31.8% |
+| Naive similarity | 10/10 → 8/10 | 5/5 | 33.45–39.11 s | 16.4–36.6% |
+| New evidence + guardrails | 4/6 → 4/6 | 5/5 | 58.74–92.73 s | 43.4–45.4% |
+| No retries | 4/6 → 2/6 | 5/5 | 53.38–66.06 s | 38.5–40.2% |
+| Tight kill switch | 4/6 → 2/6 | 5/5 | 53.19–71.09 s | 36.6–39.2% |
+
+The Foundry router selected GPT-4.1-mini in these batches; the Decision
+router used both tiers. Fact-guarded caching skipped four answer generations
+per batch; naive similarity replayed two wrong answers. Evidence guardrails
+reduced paid calls from 22 to 14 per batch and stopped both simulated FX
+failures on repeated evidence. No retries and Tight intentionally handed off
+the two recoverable invoices as well. Small-only missed `mr-05` once and was
+cheaper in every batch; do not present a quality penalty as guaranteed.
+
+The prior release's fifth Tight run omitted a printed subtotal on a clean
+invoice. The correction recovers an omitted subtotal only when a single
+printed amount agrees with the lines and total. The exact failing output
+passed deterministic validation with the fix; current hosted runs accepted
+both clean invoices on their first attempt. No budget or acceptance check
+was relaxed. These are observed pass rates, not a guarantee of future model
+responses.
+
+The [round-five recordings](replays/) reproduced every streamed result and the
+Scoreboard with both model clients, HTTP transports and DNS disabled. In Edge,
+the hosted view passed at 1920×1080, 1366×768 and 390×844, including Replay
+without a code and a separate authenticated Run showing both Foundry agents
+in Inspect. Ruff, mypy, JavaScript syntax checks and 34 pytest tests passed.
+The per-run evidence is in `.data\presenter-v5-hosted-five-rounds.json`.
+
+## Previous Azure dry run — 20 November 2026 (superseded)
 
 Two maximum-size Live runs per mode completed with priced model usage, ordered
 SSE, matching call/row/KPI totals, and no validation errors in the final suite.

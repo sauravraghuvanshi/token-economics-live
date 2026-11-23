@@ -110,7 +110,7 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
         assert control[2]["pass"] and not candidate[2]["pass"] and not candidate[4]["pass"]
     elif mode == "fact_guarded":
         assert all(row["pass"] for row in candidate)
-        assert [row["request_id"] for row in candidate if not row["calls"]] == ["rc-02", "rc-05", "rc-08"]
+        assert [row["request_id"] for row in candidate if not row["calls"]] == ["rc-02", "rc-05", "rc-08", "rc-09"]
         assert candidate[-1]["lever_detail"]["cache_action"] == "bypass"
     elif mode == "naive":
         assert {row["request_id"] for row in candidate if row["lever_detail"].get("wrong_hit")} >= {"rc-03", "rc-06"}
@@ -129,6 +129,7 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
             assert "Validator diagnostics" not in extracts[0]
             assert "quantity 1 times unit price 6000 equals 6000.00, not the extracted amount 9000." in extracts[1]
             review, = [call for call in candidate[4]["calls"] if call["kind"] == "decision"]
+            assert "notes" not in review["sent"]["state"]["extraction"]
             reconciliation = review["sent"]["state"]["validator_arithmetic"]
             assert [Decimal(amount) for amount in reconciliation["line_amounts_from_qty_times_unit_price"]] == [
                 Decimal("42000"), Decimal("6000"),

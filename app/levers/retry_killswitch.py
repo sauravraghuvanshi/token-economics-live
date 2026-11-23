@@ -13,35 +13,40 @@ from ..calls import CallSession
 from ..dataset import Invoice
 from ..foundry import ModelError
 from ..pricing import usd
-from ..prompts import object_schema, response_schema
+from ..prompts import EXTRACT_SCHEMA, response_schema
 from ..settings import Settings
 from .model_routing import probability
 
-EXTRACTOR = "Extract this invoice into the JSON schema. Copy numbers exactly as printed; use plain numbers without separators."
-RETRY = ("Your previous extraction failed these checks: {errors}. Previous extraction: {previous}. "
-         "Re-read the document and fix only what the errors point to. If a printed number conflicts with the "
-         "arithmetic or with the amount in words, use the arithmetic or the amount in words and explain in notes.")
+EXTRACTOR = (
+    "Extract this invoice into the JSON schema. On the first attempt transcribe the printed numeric fields "
+    "exactly, even when they disagree with arithmetic or the amount in words. Do not repair them until the "
+    "validator provides evidence. Use plain numbers without separators. Leave an unprinted subtotal null, "
+    "and write notes in English."
+)
+RETRY = (
+    "This is a retry, so the first-attempt transcription rule no longer applies to the flagged field. "
+    "The previous extraction failed these checks: {errors}. Previous extraction: {previous}. "
+    "Keep the printed identifiers, currency, quantities, unit prices, and any unflagged fields. "
+    "Repair only the fields supported by the validator diagnostics and the printed evidence. "
+    "Give a short factual description of any correction in notes."
+)
 GSTIN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
-STRING = {"type": "string"}
-NUMBER = {"type": "number"}
-EXTRACT_SCHEMA = response_schema("invoice", {
-    "vendor_name": STRING, "gstin": {"type": ["string", "null"]}, "invoice_number": STRING,
-    "invoice_date": STRING, "currency": {"type": "string", "enum": ["INR", "USD", "EUR"]},
-    "line_items": {"type": "array", "items": object_schema({
-        "description": STRING, "qty": NUMBER, "unit_price": NUMBER, "amount": NUMBER,
-    })},
-    "subtotal": {"type": ["number", "null"]},
-    "taxes": {"type": "array", "items": object_schema({"name": STRING, "rate_percent": NUMBER, "amount": NUMBER})},
-    "total": NUMBER, "notes": STRING,
-})
+SUBTOTAL_FIELD = re.compile(r"^[ \t]*Subtotal\b([^\r\n]*)", re.IGNORECASE | re.MULTILINE)
+PRINTED_AMOUNT = re.compile(
+    r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]{1,2}(?:,[0-9]{2})+,[0-9]{3}|[0-9]+)"
+    r"(?:\.[0-9]{1,2})?",
+)
 REVIEW_SCHEMA = response_schema("invoice_review", {"accepted": {"type": "string", "enum": ["yes", "no"]}})
 REVIEW = {
     "type": "noul",
     "instructions": (
-        "Does the extraction faithfully represent the source invoice, with only supported corrections? "
-        "Check the invoice identifiers, currency, quantities and unit prices against the source. When "
-        "printed amounts conflict, use the quantity times unit price, subtotal plus tax, or amount in "
-        "words to decide which number is supported. A supported correction is not a discrepancy."
+        "Should this structured invoice be accepted? Compare the vendor, invoice number, date, GSTIN, currency, "
+        "quantities, unit prices and tax rates to the source invoice. Accept harmless formatting differences. "
+        "For a conflicting printed line amount or total, use the verified arithmetic in the state: "
+        "a quantity times its unchanged unit price gives the correct line amount, and an unchanged subtotal "
+        "plus tax gives the correct total. The printed subtotal, taxes or amount in words can corroborate "
+        "a repair. Accept a repaired value supported by these checks; do not reject it solely because it "
+        "differs from a printed number that contradicts those checks. Reject unsupported changes."
     ),
 }
 
@@ -80,6 +85,24 @@ def decimal(value: float | int) -> Decimal:
     return Decimal(str(value))
 
 
+def printed_subtotal(value: Extraction, ocr_text: str) -> tuple[Extraction, str | None]:
+    if value.subtotal is not None or value.currency != "INR" or not value.line_items:
+        return value, None
+    fields = SUBTOTAL_FIELD.findall(ocr_text)
+    if len(fields) != 1:
+        return value, None
+    printed = fields[0].strip().removeprefix(":").strip()
+    if not PRINTED_AMOUNT.fullmatch(printed):
+        return value, None
+    subtotal = Decimal(printed.replace(",", ""))
+    line_amounts = [decimal(line.qty) * decimal(line.unit_price) for line in value.line_items]
+    if (line_amounts != [decimal(line.amount) for line in value.line_items]
+            or sum(line_amounts) != subtotal
+            or subtotal + sum(decimal(tax.amount) for tax in value.taxes) != decimal(value.total)):
+        return value, None
+    return value.model_copy(update={"subtotal": float(subtotal)}), printed
+
+
 def validate(value: Extraction) -> list[str]:
     errors = [f"MISSING_FIELD:{name}" for name in ("vendor_name", "invoice_number", "invoice_date", "line_items")
               if not getattr(value, name)]
@@ -105,7 +128,10 @@ def validate(value: Extraction) -> list[str]:
 
 
 def evidence_key(value: Extraction | None, errors: list[str]) -> str:
-    material = {"fields": value.model_dump(exclude={"notes"}) if value else None, "errors": sorted(errors)}
+    # Reformatting a date or description cannot repair an unavailable rate for the same currency.
+    fx_only = len(errors) == 1 and errors[0].startswith("FX_RATE_UNAVAILABLE:")
+    material = {"fields": None if fx_only or value is None else value.model_dump(exclude={"notes"}),
+                "errors": sorted(errors)}
     return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -117,18 +143,82 @@ def simulated_fx(value: Extraction | None) -> dict[str, Any]:
     return {"error": f"FX_RATE_UNAVAILABLE:{value.currency}"}
 
 
-def retry_evidence(value: Extraction | None, errors: list[str]) -> str:
+def corroborated_amounts(value: Extraction | None, errors: list[str]) -> tuple[list[Decimal], Decimal] | None:
+    if value is None or value.currency != "INR" or value.subtotal is None or not value.line_items:
+        return None
+    amounts = [decimal(line.qty) * decimal(line.unit_price) for line in value.line_items]
+    subtotal = decimal(value.subtotal)
+    if sum(amounts) != subtotal or any(
+        decimal(tax.amount) != subtotal * decimal(tax.rate_percent) / 100 for tax in value.taxes
+    ):
+        return None
+    total = subtotal + sum(decimal(tax.amount) for tax in value.taxes)
+    bad_lines = {f"LINE_MISMATCH:{i}" for i, (line, amount) in enumerate(zip(value.line_items, amounts), 1)
+                 if decimal(line.amount) != amount}
+    error_codes = set(errors)
+    if bad_lines:
+        if not bad_lines <= error_codes <= bad_lines | {"SUBTOTAL_MISMATCH"} or decimal(value.total) != total:
+            return None
+    elif error_codes != {"TOTAL_MISMATCH"}:
+        return None
+    return amounts, total
+
+
+def retry_anchors(value: Extraction) -> tuple[
+    str, str | None, str, float | None, list[tuple[float, float]], list[tuple[float, float]],
+]:
+    return (value.currency, value.gstin, value.invoice_number, value.subtotal,
+            [(line.qty, line.unit_price) for line in value.line_items],
+            [(tax.rate_percent, tax.amount) for tax in value.taxes])
+
+
+def reconcile_retry(
+    previous: Extraction | None, current: Extraction, amounts: tuple[list[Decimal], Decimal] | None,
+) -> tuple[Extraction, dict[str, Any] | None]:
+    # A second reading must corroborate the printed inputs before we replace derived values.
+    if previous is None or amounts is None or retry_anchors(previous) != retry_anchors(current):
+        return current, None
+    line_amounts, total = amounts
+    adjusted = [f"line {i} amount" for i, (line, amount) in enumerate(zip(current.line_items, line_amounts), 1)
+                if decimal(line.amount) != amount]
+    if decimal(current.total) != total:
+        adjusted.append("total")
+    output = current.model_copy(update={
+        "line_items": [line.model_copy(update={"amount": float(amount)})
+                       for line, amount in zip(current.line_items, line_amounts)],
+        "total": float(total),
+        "notes": "Printed quantities, prices, subtotal and taxes agreed across both extractions. "
+                 "Confirmed line amounts and total using arithmetic before review.",
+    })
+    return output, {"line_amounts": [str(amount) for amount in line_amounts],
+                    "total": str(total), "adjusted_retry_fields": adjusted}
+
+
+def retry_evidence(
+    value: Extraction | None, errors: list[str], amounts: tuple[list[Decimal], Decimal] | None,
+) -> str:
     if value is None:
         return ""
+    line_sum = sum((decimal(line.amount) for line in value.line_items), Decimal(0))
+    tax = sum((decimal(row.amount) for row in value.taxes), Decimal(0))
+    subtotal = decimal(value.subtotal) if value.subtotal is not None else line_sum
     checks = [
         f"LINE_MISMATCH:{index}: quantity {line.qty:g} times unit price {line.unit_price:g} "
         f"equals {decimal(line.qty) * decimal(line.unit_price)}, not the extracted amount {line.amount:g}."
         for index, line in enumerate(value.line_items, start=1)
         if f"LINE_MISMATCH:{index}" in errors
     ]
-    if checks:
+    if amounts is not None:
+        confirmed_lines, confirmed_total = amounts
+        checks.append(f"The printed quantities and unit prices give line amounts {', '.join(map(str, confirmed_lines))}. "
+                      f"They sum to the printed subtotal {subtotal}; adding the printed tax {tax} gives "
+                      f"{confirmed_total}. Keep these reconciled amounts and the printed subtotal and taxes.")
+    elif checks:
         checks.append("If the printed quantity and unit price are clear, use their product as the line amount "
                       "before reconciling the subtotal and taxes.")
+    if amounts is None and "TOTAL_MISMATCH" in errors and not any(code.startswith("LINE_MISMATCH:") for code in errors):
+        checks.append(f"TOTAL_MISMATCH: subtotal {subtotal} plus taxes {tax} equals {subtotal + tax}; "
+                      "cross-check with the amount in words.")
     if any(error.startswith("FX_RATE_UNAVAILABLE:") for error in errors):
         checks.append("The FX rate is unavailable in the simulated tool. This is not an extraction error; "
                       "keep the printed currency and amounts.")
@@ -141,7 +231,7 @@ def review_state(invoice: Invoice, value: Extraction) -> dict[str, Any]:
     tax = sum((decimal(row.amount) for row in value.taxes), Decimal(0))
     return {
         "ocr_text": invoice.ocr_text,
-        "extraction": value.model_dump(mode="json"),
+        "extraction": value.model_dump(mode="json", exclude={"notes"}),
         "validator_arithmetic": {
             "line_amounts_from_qty_times_unit_price": [str(amount) for amount in line_amounts],
             "subtotal_from_lines": str(sum(line_amounts, Decimal(0))),
@@ -166,17 +256,23 @@ async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple
         ctx = replace(calls.context, attempt=num)
         instructions = EXTRACTOR
         evidence = ""
+        previous = output
+        amounts = None
         if num > 1:
+            amounts = corroborated_amounts(previous, errors)
             instructions += "\n\n" + RETRY.format(
-                errors=", ".join(errors), previous=output.model_dump_json() if output else "null")
-            evidence = retry_evidence(output, errors)
+                errors=", ".join(errors), previous=previous.model_dump_json(exclude={"notes"}) if previous else "null")
+            evidence = retry_evidence(previous, errors, amounts)
         result = await calls.invoke("chat", cfg.small_deployment, {
             "messages": [{"role": "system", "content": instructions},
                          {"role": "user", "content": invoice.ocr_text + evidence}],
             "response_format": EXTRACT_SCHEMA, "max_completion_tokens": 700,
         }, context=ctx)
+        reconciliation, subtotal_source = None, None
         try:
             output = Extraction.model_validate_json(str(result.result))
+            output, subtotal_source = printed_subtotal(output, invoice.ocr_text)
+            output, reconciliation = reconcile_retry(previous, output, amounts)
             errors = validate(output)
         except ValidationError as error:
             output = None
@@ -216,6 +312,10 @@ async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple
             wasted += tokens - before
         attempts.append({"number": num, "errors": list(errors), "evidence_key": key, "repeated": repeated,
                          "review_probability": review_score, "tokens": tokens - before})
+        if reconciliation is not None:
+            attempts[-1]["arithmetic_reconciliation"] = reconciliation
+        if subtotal_source is not None:
+            attempts[-1]["subtotal_from_ocr"] = subtotal_source
         if not errors:
             stop = "accepted"
             break

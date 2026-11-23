@@ -4,13 +4,20 @@ import argparse
 import getpass
 import json
 import os
+import re
 import time
 from decimal import Decimal
 from pathlib import Path
 
 import httpx
 
+from app.agents import catalog
+from app.dataset import WORKLOAD_VERSION, load_dataset
+from app.settings import Settings
+
 MODEL_KINDS = {"chat", "router", "embedding", "decision"}
+INVOICES = {row.id: row.expected for row in load_dataset().invoices}
+DEVANAGARI = re.compile(r"[\u0900-\u097f]")
 
 
 def events(client, run_id):
@@ -26,7 +33,7 @@ def events(client, run_id):
                 yield name, json.loads(line[6:])
 
 
-def validate_run(client, lever, mode, count, source, check_stories, safety_checks):
+def validate_run(client, lever, mode, count, source, check_stories, safety_checks, agents=None):
     begin = time.monotonic()
     start = client.post("/api/runs", json={"lever": lever, "mode": mode, "count": count})
     start.raise_for_status()
@@ -39,10 +46,15 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
     summary = stream[-1][1]["summary"]
     rows = [r for event, r in stream if event == "lane_result"]
     failures: list[str] = []
+    if stream[0][1].get("workload_version") != WORKLOAD_VERSION:
+        failures.append("The hosted workload is not the expected version.")
+    if DEVANAGARI.search(json.dumps(stream, ensure_ascii=False)):
+        failures.append("The English demo stream contained Devanagari text.")
     expected_events = ["request_started", "request_started", "lane_result", "lane_result", "kpis"] * count
     if [name for name, _ in stream[1:-1] if name != "run_error"] != expected_events:
         failures.append("The stream lost or reordered request, lane, or KPI events.")
     failures.extend(body["message"] for name, body in stream if name == "run_error")
+    response_ids = set()
     for row in rows:
         if row["status"] != "ok":
             failures.append(f"{row['request_id']} {row['lane']}: {'; '.join(row['miss_reasons'])}")
@@ -55,6 +67,23 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
             failures.append(f"{row['request_id']} {row['lane']}: row cost does not match calls.")
         elif any(value != sum(c["usage"][key] for c in row["calls"]) for key, value in row["totals"]["tokens"].items()):
             failures.append(f"{row['request_id']} {row['lane']}: row tokens do not match call usage.")
+        if source == "live":
+            for call in row["calls"]:
+                if call["kind"] not in {"chat", "router"}:
+                    continue
+                agent = call.get("foundry_agent")
+                version = call.get("foundry_agent_version")
+                response_id = call.get("foundry_response_id")
+                if (agent not in (agents or {}).get(row["lane"], []) or not version
+                        or not response_id or response_id in response_ids):
+                    failures.append(f"{row['request_id']} {row['lane']}: unverified Foundry agent execution.")
+                response_ids.add(response_id)
+        if lever == "retry_killswitch" and row["pass"]:
+            expected = INVOICES[row["request_id"]]
+            output = row["lever_detail"].get("output") or {}
+            if (output.get("currency") != expected.currency or output.get("total") != expected.total
+                    or output.get("gstin") != expected.gstin):
+                failures.append(f"{row['request_id']} {row['lane']}: accepted invoice contains incorrect fields.")
     for lane in ("control", "candidate"):
         results = [r for r in rows if r["lane"] == lane]
         if [r["idx"] for r in results] != list(range(1, count + 1)):
@@ -73,22 +102,43 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
                     failures.append(f"{lane} total does not match rows.")
     if not summary["complete"]:
         failures.append("The run has incomplete totals.")
-    signal = {f"{r['request_id']}/{r['lane']}": {
-        "accepted": r["pass"], "buckets": r["totals"]["tokens"], "model": [
-            c.get("response_model") for c in r["calls"] if c.get("response_model")],
-        "cache_action": r["lever_detail"].get("cache_action"), "wrong_hit": r["lever_detail"].get("wrong_hit"),
-        "tier": r["lever_detail"].get("tier"), "similarity": r["lever_detail"].get("similarity"),
-        "routing_fee_usd": r["lever_detail"].get("routing_fee_usd"),
-        "stop": r["lever_detail"].get("stop"), "attempts": len(r["lever_detail"].get("attempts", [])),
-        "cost_usd": r["totals"]["cost_usd"], "miss_reasons": r["miss_reasons"],
-    } for r in rows}
+    signal = {
+        f"{r['request_id']}/{r['lane']}": {
+            "accepted": r["pass"], "buckets": r["totals"]["tokens"], "model": [
+                c.get("response_model") for c in r["calls"] if c.get("response_model")],
+            "agents": [c["foundry_agent"] for c in r["calls"] if c.get("foundry_agent")],
+            "agent_versions": [c["foundry_agent_version"] for c in r["calls"] if c.get("foundry_agent_version")],
+            "response_ids": [c["foundry_response_id"] for c in r["calls"] if c.get("foundry_response_id")],
+            "generation_calls": sum(c["kind"] in {"chat", "router"} for c in r["calls"]),
+            "cache_action": r["lever_detail"].get("cache_action"), "wrong_hit": r["lever_detail"].get("wrong_hit"),
+            "tier": r["lever_detail"].get("tier"), "similarity": r["lever_detail"].get("similarity"),
+            "routing_fee_usd": r["lever_detail"].get("routing_fee_usd"),
+            "stop": r["lever_detail"].get("stop"), "attempts": len(r["lever_detail"].get("attempts", [])),
+            "arithmetic_reconciliations": [a["arithmetic_reconciliation"]
+                                           for a in r["lever_detail"].get("attempts", [])
+                                           if "arithmetic_reconciliation" in a],
+            "subtotals_from_ocr": [a["subtotal_from_ocr"] for a in r["lever_detail"].get("attempts", [])
+                                   if "subtotal_from_ocr" in a],
+            "cost_usd": r["totals"]["cost_usd"], "miss_reasons": r["miss_reasons"],
+        } for r in rows
+    }
 
     def see(key, condition, explanation):
         if key in signal and not condition(signal[key]):
             failures.append(explanation)
 
     if check_stories:
+        control, candidate_summary = summary["control"], summary["candidate"]
         candidate = [r for r in rows if r["lane"] == "candidate"]
+        if lever != "retry_killswitch" and control["accepted"] != count:
+            failures.append("The support baseline did not accept every request.")
+        if mode in {"default", "foundry_router", "decision_router", "fact_guarded"}:
+            if candidate_summary["accepted"] != count:
+                failures.append("The recommended support path did not accept every request.")
+            if (source == "live" and count == 10 and summary["complete"]
+                    and candidate_summary["cpa_usd"] is not None and control["cpa_usd"] is not None
+                    and Decimal(candidate_summary["cpa_usd"]) >= Decimal(control["cpa_usd"])):
+                failures.append("The recommended support path did not lower cost per accepted request.")
         if lever == "prompt_caching":
             if summary["candidate"]["tokens"]["cached"] <= summary["control"]["tokens"]["cached"]:
                 failures.append("Candidate did not read more cached tokens than the control.")
@@ -98,22 +148,27 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
                    for r in candidate):
                 failures.append("Foundry routing did not show a billed router call and the model that answered.")
         elif mode == "decision_router":
-            for key in ("mr-03/candidate", "mr-05/candidate"):
+            for key in ("mr-03/candidate", "mr-05/candidate", "mr-07/candidate", "mr-09/candidate"):
                 see(key, lambda r: r["tier"] == "frontier", f"Decision router did not escalate {key}.")
             if not any(r["tier"] == "small" for k, r in signal.items() if k.endswith("/candidate")):
                 failures.append("The decision router did not send any request to the small model.")
         elif mode == "small_all":
             if any(r["lever_detail"].get("tier") != "small" for r in candidate):
                 failures.append("Small-only mode used a different tier.")
+            if (summary["complete"] and Decimal(candidate_summary["cost_usd"]) >= Decimal(control["cost_usd"])):
+                failures.append("Small-only mode did not lower total inference cost.")
         elif mode == "fact_guarded":
-            for key in ("rc-02/candidate", "rc-05/candidate", "rc-08/candidate"):
-                see(key, lambda r: r["cache_action"] == "hit" and r["accepted"], f"Expected a correct hit: {key}")
-            for key in ("rc-03/candidate", "rc-06/candidate", "rc-09/candidate"):
+            for key in ("rc-02/candidate", "rc-05/candidate", "rc-08/candidate", "rc-09/candidate"):
+                see(key, lambda r: r["cache_action"] == "hit" and r["accepted"] and not r["generation_calls"],
+                    f"Expected a correct hit with no generation: {key}")
+            for key in ("rc-03/candidate", "rc-06/candidate"):
                 see(key, lambda r: r["cache_action"] == "store" and r["accepted"], f"Expected a correct miss: {key}")
             see("rc-10/candidate", lambda r: r["cache_action"] == "bypass", "Multi-intent request did not bypass.")
         elif mode == "naive":
             for key in ("rc-03/candidate", "rc-06/candidate"):
                 see(key, lambda r: r["wrong_hit"], f"Expected a wrong similarity hit: {key}")
+            if count == 10 and candidate_summary["accepted"] != 8:
+                failures.append("Naive similarity should miss exactly the two changed-fact samples.")
         elif lever == "retry_killswitch":
             stops = {"guardrails": {"no new evidence", "retry limit"}, "no_retries": {"no retries"},
                      "tight": {"kill switch"}}[mode]
@@ -129,15 +184,20 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
             ):
                 failures.append("No runaway invoice demonstrated a repeated evidence handoff.")
             for request_id in ("inv-01", "inv-04"):
-                see(f"{request_id}/candidate", lambda r: r["accepted"], f"{request_id} should be accepted.")
-            if mode != "tight":
-                for request_id in ("inv-02", "inv-05"):
-                    see(f"{request_id}/candidate", lambda r: r["accepted"] == (mode == "guardrails"),
-                        f"{request_id} did not demonstrate the retry trade-off.")
+                for lane in ("control", "candidate"):
+                    see(f"{request_id}/{lane}", lambda r: r["accepted"] and r["attempts"] == 1,
+                        f"{request_id} should be accepted on the first attempt in {lane}.")
+            for request_id in ("inv-02", "inv-05"):
+                see(f"{request_id}/control", lambda r: r["accepted"] and r["attempts"] == 2,
+                    f"{request_id} did not recover on the first retry in the baseline.")
+                see(f"{request_id}/candidate", lambda r: r["accepted"] == (mode == "guardrails")
+                    and r["attempts"] == (2 if mode == "guardrails" else 1),
+                    f"{request_id} did not demonstrate the retry trade-off.")
     elapsed = time.monotonic() - begin
     if safety_checks and count == 10 and source == "live" and elapsed >= 90:
         failures.append("Ten-request run exceeded the 90-second dry-run target.")
-    return {"lever": lever, "mode": mode, "run_id": run_id, "count": count, "summary": summary,
+    return {"workload_version": stream[0][1].get("workload_version"),
+            "lever": lever, "mode": mode, "run_id": run_id, "count": count, "summary": summary,
             "elapsed_seconds": round(elapsed, 2), "signals": signal, "failures": failures}
 
 
@@ -149,6 +209,7 @@ def main():
     parser.add_argument("--max-counts", action="store_true")
     parser.add_argument("--source", default="live", choices=("live", "fake"))
     parser.add_argument("--assert-stories", action="store_true")
+    parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--verify-replays", action="store_true")
     parser.add_argument("--mode", help="Run just this mode.")
     parser.add_argument("--output", type=Path)
@@ -173,21 +234,29 @@ def main():
         else:
             raise SystemExit(status["detail"])
         config = client.get("/api/config").raise_for_status().json()
+        if config.get("workload_version") != WORKLOAD_VERSION:
+            raise SystemExit("The app is not serving the expected workload release.")
         expected = set(config["deployments"].values())
+        expected_agents = {spec.name for spec in catalog(Settings()).values()}
         if opts.source == "live" and (
             len(expected) != 5 or set(status["deployments"]) != expected
+            or set(status.get("agents", {})) != expected_agents
             or not status["prices_verified"] or status["missing_prices"]
         ):
-            raise SystemExit("Live smoke requires five responding deployments and all prices verified.")
-        if not opts.mode and "tight" not in config["tabs"]["retry_killswitch"]["modes"]:
-            print("Tight mode is disabled; set TIGHT_KILL_SWITCH_USD after measuring the guardrails run.")
+            raise SystemExit("Live smoke requires five responding deployments, six active agents and verified prices.")
+        expected_modes = {"default", "foundry_router", "decision_router", "small_all", "fact_guarded", "naive",
+                          "guardrails", "no_retries", "tight"}
+        configured_modes = {mode for tab in config["tabs"].values() for mode in tab["modes"]}
+        if not opts.mode and opts.assert_stories and configured_modes != expected_modes:
+            raise SystemExit(f"Full story verification requires all nine modes. Found {sorted(configured_modes)}.")
         for i in range(opts.rounds):
             for lever, tab in config["tabs"].items():
                 for mode in tab["modes"]:
                     if opts.mode and mode != opts.mode:
                         continue
                     count = tab["max" if opts.max_counts else "default"]
-                    result = validate_run(client, lever, mode, count, opts.source, opts.assert_stories, True)
+                    result = validate_run(client, lever, mode, count, opts.source, opts.assert_stories, True,
+                                          tab.get("agents", {}).get(mode))
                     result["round"] = i + 1
                     if opts.verify_replays and result["summary"]["complete"]:
                         replay = client.post(f"/api/replays/{lever}/{mode}", params={"speed": 2})
@@ -207,6 +276,8 @@ def main():
                           f"{len(result['failures'])} validation issue(s)", flush=True)
                     for problem in result["failures"]:
                         print(f"  {problem}", flush=True)
+                    if opts.fail_fast and result["failures"]:
+                        raise SystemExit(1)
     if not records or any(r["failures"] for r in records):
         raise SystemExit(1)
 

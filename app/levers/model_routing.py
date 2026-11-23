@@ -10,8 +10,8 @@ TIER_QUESTION = {
     "instructions": "Which model tier does this customer request need to be answered correctly?",
     "criteria": {
         "small": "A single, simple question that one policy lookup answers.",
-        "frontier": ("Several requests at once, a request to bypass or bend a rule, or a technical problem "
-                     "that needs step-by-step reasoning."),
+        "frontier": ("Several requests at once, a request to bypass or bend a rule, or a case requiring a "
+                     "calculation or step-by-step reasoning."),
     },
 }
 

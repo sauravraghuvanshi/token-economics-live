@@ -39,17 +39,21 @@ class Usage:
                 completion=token_count(raw.get("output_tokens", raw.get("completion_tokens")),
                                        "output_tokens", optional=True),
             )
-        prompt = token_count(raw.get("prompt_tokens"), "prompt_tokens")
+        # Prompt Agents use the Responses API; health probes still use Chat Completions.
+        responses = kind in {"chat", "router"} and "input_tokens" in raw
+        prompt_field = "input_tokens" if responses else "prompt_tokens"
+        completion_field = "output_tokens" if responses else "completion_tokens"
+        prompt = token_count(raw.get(prompt_field), prompt_field)
         if kind == "embedding":
             return cls(prompt=prompt)
-        pd = raw.get("prompt_tokens_details") or {}
-        cd = raw.get("completion_tokens_details") or {}
+        pd = raw.get(f"{prompt_field}_details") or {}
+        cd = raw.get(f"{completion_field}_details") or {}
         if not isinstance(pd, dict) or not isinstance(cd, dict):
             raise ValueError("Invalid nested token usage counters.")
         return cls(
             prompt=prompt,
             cached=token_count(pd.get("cached_tokens"), "cached_tokens", optional=True),
             cache_write=token_count(pd.get("cache_write_tokens"), "cache_write_tokens", optional=True),
-            completion=token_count(raw.get("completion_tokens"), "completion_tokens"),
+            completion=token_count(raw.get(completion_field), completion_field),
             reasoning=token_count(cd.get("reasoning_tokens"), "reasoning_tokens", optional=True),
         )

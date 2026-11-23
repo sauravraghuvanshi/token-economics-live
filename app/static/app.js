@@ -1,40 +1,52 @@
-import { byId as $, el, inspect, ist, json, layout, metrics, rows, scoreboard, usd } from "./components/render.js";
+import { experiments, laneLabels, orchestrationNote, pages, responsesExample, supportAgentNote } from "./components/briefs.js";
+import { metrics, readout } from "./components/evidence.js";
+import { byId as $, el, ist, json, pill, sourceText, usd } from "./components/format.js";
+import { agentLine, details, inspect, layout, modeLabel, rows, scoreboard } from "./components/render.js";
 
-const state = { config: null, status: null, active: null, lever: "prompt_caching", tabs: {}, mode: {}, count: {},
-  runs: {}, cache: {}, starting: false };
-const modes = () => state.config.tabs[state.lever]?.modes;
-const tab = () => state.config.tabs[state.lever];
-const current = () => state.runs[`${state.lever}/${state.mode[state.lever]}`] || {};
-const source = () => current().source || state.status?.mode;
-const setOptions = (select, values, active) => {
-  select.replaceChildren(...values.map(([value, name]) => {
-    const option = el("option", name);
-    option.value = value;
-    return option;
-  }));
-  select.value = active;
+const state = {
+  config: null, status: null, active: null, lever: "prompt_caching", tabs: {}, mode: {}, count: {},
+  runs: {}, cache: {}, starting: false, cacheWorking: false, boardReplay: false,
+  projection: { volume: "1000", seat: "25", pick: "" },
 };
+const tab = () => state.config?.tabs[state.lever];
+const currentKey = () => `${state.lever}/${state.mode[state.lever]}`;
+const current = () => state.runs[currentKey()] || {};
+const viewSource = () => current().source || state.status?.mode || state.config?.mode;
+const replayView = () => state.active?.source === "replay" || current().source === "replay" || state.boardReplay;
+const busy = () => Boolean(state.active || state.starting || state.cacheWorking);
+const readStored = (storage, key) => {
+  try { return window[storage].getItem(key); } catch { return null; }
+};
+function writeStored(storage, key, value) {
+  try {
+    if (value) window[storage].setItem(key, value);
+    else window[storage].removeItem(key);
+  } catch { /* Themes and demo access can still work without browser storage. */ }
+}
+let memoryCode = null;
+const savedCode = () => memoryCode || readStored("sessionStorage", "demo-access");
+
 let toastTimer;
 function toast(text) {
   $("toast").textContent = text;
   $("toast").hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 5300);
+  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 6200);
 }
 
 async function api(url, opts = {}) {
   const response = await fetch(url, { cache: "no-store", ...opts });
-  const payload = await response.json();
   if (!response.ok) {
-    const error = new Error(typeof payload.detail === "string" ? payload.detail : `Request failed (${response.status}).`);
+    const payload = await response.json().catch(() => null);
+    const error = new Error(typeof payload?.detail === "string" ? payload.detail : `The request failed (${response.status}).`);
     error.status = response.status;
     throw error;
   }
-  return payload;
+  return response.json();
 }
 
 function access() {
-  const existing = sessionStorage.getItem("demo-access");
+  const existing = savedCode();
   if (!state.config.access_code_required || existing) return Promise.resolve(existing);
   const modal = $("access"), input = $("access-code");
   input.value = "";
@@ -43,7 +55,10 @@ function access() {
     modal.addEventListener("close", () => {
       const code = modal.returnValue === "allow" ? input.value : null;
       input.value = "";
-      if (code) sessionStorage.setItem("demo-access", code);
+      if (code) {
+        memoryCode = code;
+        writeStored("sessionStorage", "demo-access", code);
+      }
       resolve(code);
     }, { once: true });
     modal.showModal();
@@ -57,52 +72,117 @@ async function post(path, body, protectedAction = false) {
     return await api(path, { method: "POST", headers: { "Content-Type": "application/json",
       ...(code ? { "X-Demo-Code": code } : {}) }, body: JSON.stringify(body) });
   } catch (error) {
-    if (error.status === 401) sessionStorage.removeItem("demo-access");
+    if (error.status === 401) {
+      memoryCode = null;
+      writeStored("sessionStorage", "demo-access", null);
+    }
     throw error;
   }
 }
 
-function provenance() {
-  const run = current(), status = state.status;
-  if (source() === "replay") return run.recorded_at
-    ? `REPLAY · recorded ${ist(run.recorded_at)}${run.recording_source === "fake" ? " · FAKE DATA" : ""}` : "REPLAY";
-  if (source() === "replay-only") return "REPLAY ONLY";
-  if (source() === "fake") return "FAKE DATA";
-  if (status?.foundry === "ok") return "Foundry live";
-  return status ? "Foundry offline" : "Connecting…";
+function shownSource(run) {
+  if (run.source === "replay" && run.recorded_at) {
+    return `REPLAY · recorded ${ist(run.recorded_at)}${run.recording_source === "fake" ? " · FAKE DATA" : ""}`;
+  }
+  return sourceText(run.source, run.recording_source);
 }
 
 function statusUI() {
-  const status = state.status;
-  const pill = $("status");
-  const live = source() === "live" && status?.foundry === "ok";
-  pill.textContent = provenance();
-  pill.className = "pill " + (source()?.startsWith("replay") ? "replay" : source() === "fake" ? "fake" : live ? "live" : "offline");
-  pill.title = status?.detail || "";
+  const status = state.status, run = current(), source = viewSource();
+  let tone = source, label;
+  if (source === "replay") label = shownSource(run);
+  else if (source === "fake" || source === "replay-only") {
+    label = sourceText(source);
+    if (source === "replay-only") tone = "replay";
+  } else {
+    tone = status?.foundry === "ok" ? "live" : "offline";
+    label = tone === "live" ? "Foundry live" : status ? "Foundry offline" : "Connecting…";
+  }
+  const badge = $("status");
+  if (badge.textContent !== label) badge.textContent = label;
+  badge.className = `pill ${tone}`;
+  badge.title = source === "replay" ? "Playback of a saved run. No new model calls."
+    : [status?.detail, status?.prices_verified && `List prices verified ${status.verified_on || ""}.`].filter(Boolean).join(" ");
+
   const messages = [];
-  if (status?.mode === "live" && status.foundry !== "ok") messages.push([status.detail, "miss"]);
-  if (source() !== "fake" && current().recording_source !== "fake"
-      && (current().prices_verified ?? status?.prices_verified) === false) {
-    messages.push(["Prices not verified: fill config/pricing.json", "warn"]);
+  if (status?.unreachable || (source === "live" && status?.foundry !== "ok")) {
+    messages.push(["Foundry status", status?.detail || "Checking the connection.", "miss"]);
   }
-  if (status?.missing_prices.length || current().results?.some(result => result.status === "price_missing")) {
-    messages.push([`Price missing: totals and savings are incomplete${status?.missing_prices.length
-      ? " · " + status.missing_prices.join(", ") : ""}.`, "miss"]);
+  if (source !== "fake" && run.recording_source !== "fake" && (run.prices_verified ?? status?.prices_verified) === false
+      && (source !== "replay" || run.prices_verified === false)) {
+    messages.push(["Pricing", "Prices not verified: fill config/pricing.json.", "warn"]);
   }
-  if (source() === "fake") messages.push(["FAKE DATA · synthetic usage, latency, answers and fixture prices. No Azure calls.", "muted"]);
-  $("banners").replaceChildren(...messages.map(([text, tone]) => el("p", text, `banner ${tone}`)));
+  const missing = source === "replay" ? [] : status?.missing_prices || [];
+  if (missing.length || run.results?.some(result => result.status === "price_missing")) {
+    messages.push(["Pricing", `Price missing: totals and savings are incomplete${missing.length ? ` · ${missing.join(", ")}` : ""}.`, "miss"]);
+  }
+  if (source === "fake" || run.recording_source === "fake") {
+    messages.push(["Data source", "Synthetic answers, token counts, timings and test prices. No Azure calls.", "muted"]);
+  }
+  const banners = $("banners");
+  const text = JSON.stringify(messages);
+  if (banners.dataset.messages === text) return;
+  banners.dataset.messages = text;
+  banners.replaceChildren(...messages.map(([title, detail, css]) => {
+    const p = el("p", null, `banner ${css}`);
+    p.append(el("strong", `${title} · `), detail);
+    return p;
+  }));
 }
 
 function buttons() {
-  const playing = Boolean(state.active || state.starting), data = tab();
+  if (!tab()) return;
+  const playing = busy(), offline = state.config.mode === "live" && state.status?.foundry !== "ok";
   const isReplayOnly = state.config.mode === "replay-only";
   $("count").disabled = playing || isReplayOnly;
   $("mode").disabled = playing;
-  $("run").disabled = playing || isReplayOnly || (state.config.mode === "live" && state.status?.foundry !== "ok");
-  $("run").textContent = state.lever === "retry_killswitch"
-    ? `Run ${state.count[state.lever]} documents` : `Run ${state.count[state.lever]} requests`;
-  $("replay").disabled = playing || !data?.recordings?.includes(state.mode[state.lever]);
-  $("howto-btn").disabled = state.lever === "scoreboard";
+  $("run").disabled = playing || isReplayOnly || offline;
+  $("run").title = isReplayOnly ? "This server only plays recordings." : offline ? "Foundry is unavailable. Try a recording." : "";
+  const label = `Run ${state.count[state.lever]} ${state.lever === "retry_killswitch" ? "documents" : "requests"}`;
+  if ($("run").textContent !== label) $("run").textContent = label;
+  $("run").setAttribute("aria-label", label);
+  const recorded = tab().recordings?.includes(state.mode[state.lever]);
+  $("replay").disabled = playing || !recorded;
+  $("replay").title = recorded ? "Play back the saved batch. No access code or model calls." : "This mode has no saved recording.";
+}
+
+function portalLink() {
+  const value = state.config?.foundry_agents_url;
+  if (!value || state.config.mode !== "live" || replayView()) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    const link = el("a", "View agents in Foundry ↗");
+    link.href = url.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    return link;
+  } catch { return null; }
+}
+
+function brief() {
+  const page = pages[state.lever], mode = state.mode[state.lever], experiment = experiments[mode];
+  if (!experiment) return;
+  const agents = current().source !== "replay" && state.config.mode === "live" ? tab().agents?.[mode] : null;
+  const grid = el("div", null, "brief-grid");
+  for (const [index, title, copy, lane] of [
+    ["01", laneLabels.control, page.baseline, "control"],
+    ["02", laneLabels.candidate, experiment.change, "candidate"],
+    ["03", "What to look for", experiment.watch, null],
+  ]) {
+    const section = el("div", null, `brief-part${lane === "candidate" ? " lever-part" : ""}`);
+    const h = el("h3");
+    const n = el("i", index);
+    n.setAttribute("aria-hidden", "true");
+    h.append(n, title);
+    if (lane === "candidate" && experiment.counterexample) h.append(el("span", "Counterexample", "tag"));
+    const names = lane && agentLine("Configured Foundry agent", agents?.[lane]);
+    section.append(h, el("p", state.lever === "response_cache" && names ? copy.replace("answer model", "answer agent") : copy));
+    if (names) section.append(names);
+    grid.append(section);
+  }
+  $("brief").replaceChildren(grid);
+  $("foundry-portal").replaceChildren(...[portalLink()].filter(Boolean));
 }
 
 function cachePanel(run) {
@@ -111,118 +191,197 @@ function cachePanel(run) {
   $("comparison").classList.toggle("has-cache", visible);
   root.hidden = !visible;
   if (!visible) return;
-  const key = state.mode.response_cache, local = state.cache[key] || {};
+  const key = state.mode.response_cache, local = run.source === "replay" ? {} : state.cache[key] || {};
   if (!root.firstChild) {
     const form = el("form"), label = el("label", "Ask a question against the cache"), input = el("input");
     input.id = "follow-up";
-    input.placeholder = "Synthetic demo questions only";
+    input.placeholder = "Try another wording of a demo question";
     input.required = true;
     input.maxLength = 500;
     label.append(input);
     const ask = el("button", "Ask · not graded");
     ask.type = "submit";
     form.append(label, ask);
-    form.onsubmit = async event => {
+    form.onsubmit = event => {
       event.preventDefault();
       const mode = state.mode.response_cache;
-      try {
+      cacheAction(async () => {
         const result = await post("/api/cache/ask", { mode, question: input.value }, true);
-        if (result) {
-          state.cache[mode] = result;
-          cachePanel(current());
-        }
-      } catch (error) { toast(error.message); }
+        if (result) state.cache[mode] = result;
+      });
     };
     const clear = el("button", "Clear cache");
     clear.id = "clear-cache";
     clear.type = "button";
-    clear.onclick = async () => {
-      try {
-        const reply = await post("/api/cache/clear", {}, true);
-        if (reply) {
-          state.cache = { fact_guarded: { entries: [] }, naive: { entries: [] } };
-          cachePanel(current());
-          toast("Response cache cleared.");
-        }
-      } catch (error) { toast(error.message); }
-    };
+    clear.onclick = () => cacheAction(async () => {
+      if (await post("/api/cache/clear", {}, true)) {
+        state.cache = { fact_guarded: { entries: [] }, naive: { entries: [] } };
+        toast("Response cache cleared.");
+      }
+    });
+    const title = el("div", null, "cache-title");
+    title.append(el("h2", "Answer cache"), clear);
+    const note = el("p", null, "muted"); note.id = "cache-note";
     const entries = el("div"); entries.id = "cache-entries";
-    const response = el("p", null, "muted"); response.id = "follow-up-result";
-    root.append(el("h2", "Cache entries"), clear, entries, form, response);
+    const response = el("p"); response.id = "follow-up-result";
+    response.setAttribute("role", "status");
+    root.append(title, note, form, response, entries);
   }
-  const frozen = state.active || state.starting || state.config.mode === "replay-only" || run.source === "replay";
-  $("clear-cache").disabled = Boolean(frozen);
-  $("follow-up").disabled = Boolean(frozen);
-  root.querySelector("button[type=submit]").disabled = Boolean(frozen);
+  const frozen = state.config.mode === "replay-only" || run.source === "replay";
+  const actionsBlocked = frozen || busy();
+  $("clear-cache").disabled = actionsBlocked;
+  $("follow-up").disabled = actionsBlocked;
+  root.querySelector("button[type=submit]").disabled = actionsBlocked;
+  $("cache-note").textContent = frozen ? "Recorded entries only. Follow-up and clearing are disabled during playback."
+    : "Each run starts with an empty cache. A follow-up uses the current cache and may cost money.";
   const entries = local.entries || run.entries || [];
-  $("cache-entries").replaceChildren(...(entries.length ? entries.map(entry => {
-    const item = el("article");
-    item.append(el("span", `${entry.id} · ${entry.key}`, "chip"), el("p", entry.question),
-      el("p", entry.answer), el("small", `${entry.hits} hits`));
-    return item;
-  }) : [el("p", "Cache is empty.", "muted")]));
+  const entryRoot = $("cache-entries");
+  if (entryRoot.renderedEntries !== entries) {
+    entryRoot.renderedEntries = entries;
+    entryRoot.replaceChildren(...(entries.length ? entries.map(entry => {
+      const item = el("article"), disclosure = el("details");
+      disclosure.append(el("summary", `${entry.id} · ${entry.hits} ${entry.hits === 1 ? "hit" : "hits"}`),
+        el("code", entry.key), el("p", entry.question, "muted"), el("p", entry.answer));
+      item.append(disclosure);
+      return item;
+    }) : [el("p", "Cache is empty.", "muted")]));
+  }
   $("follow-up-result").textContent = local.answer
     ? `${local.cache_action} · ${local.key || "no key"} · ${usd(local.cost_usd, 5)} · not graded — ${local.answer}` : "";
 }
 
+async function cacheAction(action) {
+  if (busy() || current().source === "replay") return;
+  state.cacheWorking = true;
+  buttons();
+  cachePanel(current());
+  try { await action(); } catch (error) { toast(error.message); }
+  finally {
+    state.cacheWorking = false;
+    buttons();
+    cachePanel(current());
+  }
+}
+
 function renderRun() {
-  const run = current();
-  const count = run.runCount || state.count[state.lever];
+  if (!tab()) return;
+  const run = current(), count = run.runCount || state.count[state.lever];
+  const source = $("evidence-source");
+  source.hidden = !run.source;
+  source.className = `pill ${run.source || ""}`;
+  source.textContent = run.source === "replay" ? `Viewing ${sourceText(run.source, run.recording_source)}` : sourceText(run.source);
   metrics(state.lever, run.kpis, count);
-  rows(tab(), state.lever, count, run.results || [], (row, lane) => inspect(row, lane,
-    state.config.prefix_layout?.prefix || 0, provenance()));
-  $("progress").textContent = run.results ? `${run.results.length}/${2 * count} lane results`
-    + (run.done ? " · complete" : " · streaming") : "";
+  readout(state.lever, state.mode[state.lever], run);
+  rows(tab(), state.lever, count, run, (row, lane, question) => inspect(row, lane, question,
+    state.config.prefix_layout?.prefix || 0, run.source, shownSource(run)));
+  const progress = run.results ? `${run.results.length}/${2 * count} lane results`
+    + ` · ${run.error ? "stopped" : run.done ? "complete" : run.reconnecting ? "reconnecting" : "streaming"}`
+    : "";
+  if ($("progress").textContent !== progress) $("progress").textContent = progress;
+  const meter = $("run-meter");
+  meter.hidden = !run.results;
+  meter.max = 2 * count;
+  meter.value = run.results?.length || 0;
   cachePanel(run);
   buttons();
   statusUI();
 }
 
-async function selectTab(key) {
+const setOptions = (select, values, active) => {
+  select.replaceChildren(...values.map(([value, name]) => {
+    const option = el("option", name);
+    option.value = value;
+    return option;
+  }));
+  select.value = active;
+};
+
+let boardSequence = 0;
+async function refreshBoard() {
+  const root = $("scoreboard"), sequence = ++boardSequence;
+  root.setAttribute("aria-busy", "true");
+  try {
+    const data = await api("/api/scoreboard");
+    if (sequence === boardSequence && state.lever === "scoreboard") {
+      scoreboard(root, data.runs, state.config.tabs, state.projection);
+    }
+  } catch (error) {
+    if (sequence === boardSequence && state.lever === "scoreboard") {
+      root.replaceChildren(el("p", `The Scoreboard could not load. ${error.message}`, "empty-note"));
+    }
+  } finally { if (sequence === boardSequence) root.removeAttribute("aria-busy"); }
+}
+
+function selectTab(key) {
+  const isBoard = key === "scoreboard";
+  state.boardReplay = isBoard && replayView();
   state.lever = key;
   for (const [lever, button] of Object.entries(state.tabs)) {
     if (lever === key) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
-  const isBoard = key === "scoreboard";
   $("bench").hidden = isBoard;
   $("scoreboard").hidden = !isBoard;
   $("title").textContent = isBoard ? "Scoreboard" : tab().title;
-  $("subtitle").textContent = isBoard ? "Compare the cost of accepted outcomes." : tab().subtitle;
-  $("eyebrow").textContent = `0${Object.keys(state.tabs).indexOf(key) + 1} / BENCHMARK · CONTOSO CLOUDDESK`;
+  $("subtitle").textContent = pages[key].intro;
+  const index = String(Object.keys(state.tabs).indexOf(key) + 1).padStart(2, "0");
+  $("eyebrow").textContent = isBoard ? "Run history · Contoso CloudDesk" : `Experiment ${index} / 04 · Contoso CloudDesk`;
   $("howto-btn").disabled = isBoard;
   if (isBoard) {
     statusUI();
-    try { scoreboard($("scoreboard"), (await api("/api/scoreboard")).runs, state.config.tabs); }
-    catch (error) { toast(error.message); }
+    if (!$("scoreboard").hasChildNodes()) $("scoreboard").append(el("p", "Loading the latest runs…", "empty-note"));
+    refreshBoard();
     return;
   }
-  setOptions($("mode"), Object.entries(modes()), state.mode[key]);
+  setOptions($("mode"), Object.entries(tab().modes).map(([m, label]) => [m, modeLabel(m, label)]), state.mode[key]);
   setOptions($("count"), Array.from({ length: tab().max - tab().min + 1 }, (_, i) =>
     [tab().min + i, tab().min + i]), state.count[key]);
   $("count-label").textContent = key === "retry_killswitch" ? "Documents" : "Requests";
-  layout(key === "prompt_caching" ? state.config.prefix_layout : null);
+  $("receipt-note").textContent = pages[key].receipt;
+  $("receipts-title").textContent = key === "retry_killswitch" ? "Invoice receipts" : "Request receipts";
+  const prompt = key === "prompt_caching" ? state.config.prefix_layout : null;
+  $("receipt-area").classList.toggle("has-layout", Boolean(prompt));
+  layout(prompt);
+  brief();
   renderRun();
 }
 
 function connect(id, key, run, lever, mode) {
-  const events = new EventSource(`/api/runs/${id}/events`);
-  const isShown = () => key === `${state.lever}/${state.mode[state.lever]}`;
+  const events = new EventSource(`/api/runs/${encodeURIComponent(id)}/events`);
+  const isShown = () => key === currentKey();
+  let renderFrame = 0, recovering = false;
+  const update = () => {
+    if (!isShown() || renderFrame) return;
+    renderFrame = requestAnimationFrame(() => {
+      renderFrame = 0;
+      if (isShown()) renderRun();
+    });
+  };
   const on = (name, callback) => events.addEventListener(name, event => {
+    run.reconnecting = false;
     callback(JSON.parse(event.data));
-    if (isShown()) renderRun();
+    update();
   });
   function finish() {
+    if (run.done) return;
     events.close();
     state.active = null;
     run.done = true;
     buttons();
-    if (state.lever === "scoreboard") selectTab("scoreboard");
-    checkStatus();
+    if (state.lever === "scoreboard") refreshBoard();
+    if (run.source !== "replay") checkStatus();
+    update();
   }
   on("run_started", data => Object.assign(run, data, { runCount: data.count }));
+  on("request_started", data => {
+    const request = run.requests.get(data.request_id) || { text: data.text, lanes: new Set() };
+    request.lanes.add(data.lane);
+    run.requests.set(data.request_id, request);
+  });
   on("lane_result", data => {
-    run.results.push(data);
+    const i = run.results.findIndex(row => row.request_id === data.request_id && row.lane === data.lane);
+    if (i < 0) run.results.push(data);
+    else run.results[i] = data;
     if (data.lever_detail?.entries) run.entries = data.lever_detail.entries;
   });
   on("kpis", data => { run.kpis = data; });
@@ -234,79 +393,123 @@ function connect(id, key, run, lever, mode) {
   });
   on("run_error", data => {
     toast(data.message);
-    if (data.fatal) finish();
+    if (data.fatal) {
+      run.error = data.message;
+      finish();
+    }
   });
   events.onerror = async () => {
-    if (run.done) return;
+    if (run.done || recovering) return;
+    run.reconnecting = recovering = true;
+    update();
     try {
-      const snapshot = await api(`/api/runs/${id}`);
-      if (snapshot.done) {
-        run.results = snapshot.results;
-        run.kpis = snapshot.summary;
-        finish();
-        if (isShown()) renderRun();
-      }
+      const snapshot = await api(`/api/runs/${encodeURIComponent(id)}`);
+      if (run.done || !snapshot.done) return;
+      run.results = snapshot.results;
+      run.kpis = snapshot.summary;
+      run.runCount = snapshot.count;
+      run.recorded_at = snapshot.recorded_at;
+      run.recording_source = snapshot.recording_source;
+      run.entries = [...run.results].reverse().find(row => row.lever_detail?.entries)?.lever_detail.entries;
+      if (!run.kpis) run.error = "The run ended before a summary could be saved.";
+      finish();
     } catch (error) {
-      if (error.status === 404) { toast(error.message); finish(); }
-    }
+      if (!run.done && (error.status === 404 || events.readyState === EventSource.CLOSED)) {
+        run.error = "The result stream could not be recovered. Try another run or a recording.";
+        finish();
+      }
+    } finally { recovering = false; }
   };
 }
 
 async function start(replay = false) {
-  if (state.active || state.starting || state.lever === "scoreboard" || !state.config) return;
-  if ((replay ? $("replay") : $("run")).disabled) return;
-  const lever = state.lever, mode = state.mode[lever], count = state.count[lever];
-  const key = `${lever}/${mode}`;
+  if (busy() || !tab() || (replay ? $("replay") : $("run")).disabled) return;
+  const lever = state.lever, mode = state.mode[lever], count = state.count[lever], key = currentKey();
   state.starting = true;
   buttons();
+  cachePanel(current());
   try {
     const result = await (replay ? post(`/api/replays/${lever}/${mode}`, {})
       : post("/api/runs", { lever, mode, count }, true));
     if (!result) return;
-    state.active = result.run_id;
-    const run = { results: [], runCount: count, done: false };
+    const run = { source: replay ? "replay" : state.config.mode, results: [], requests: new Map(), runCount: count, done: false };
+    state.active = run;
     state.runs[key] = run;
-    if (lever === "response_cache") delete state.cache[mode];
+    if (lever === "response_cache" && !replay) delete state.cache[mode];
     connect(result.run_id, key, run, lever, mode);
-    if (state.lever === lever) renderRun();
+    if (currentKey() === key) {
+      brief();
+      renderRun();
+    }
   } catch (error) {
     toast(error.message);
   } finally {
     state.starting = false;
     buttons();
+    cachePanel(current());
   }
 }
 
+let openingHowTo = false;
 async function howto() {
-  if (state.lever === "scoreboard" || !state.config) return;
+  if (!tab() || openingHowTo || document.querySelector("dialog[open]")) return;
+  const key = currentKey(), lever = state.lever, mode = state.mode[lever], page = pages[lever], experiment = experiments[mode];
+  openingHowTo = true;
   try {
-    const snippet = await api(`/static/howto/${state.lever}-${state.mode[state.lever]}.json`);
+    const snippet = await api(`/static/howto/${lever}-${mode}.json`);
+    if (key !== currentKey() || document.querySelector("dialog[open]")) return;
+    const run = current();
     const grid = el("div", null, "diff");
-    for (const [label, code] of [["Control", snippet.control], ["Candidate", snippet.candidate]]) {
+    for (const name of Object.keys(laneLabels)) {
       const column = el("div");
-      column.append(el("h3", label), el("pre", json(code)));
+      column.append(el("h3", laneLabels[name]), el("pre", json(snippet[name])));
       grid.append(column);
     }
+    const steps = el("section", null, "implementation-steps"), list = el("ol");
+    list.append(...experiment.steps.map(s => el("li", s)));
+    steps.append(el("h3", "Start here"), list);
     const body = $("howto-body");
-    body.replaceChildren(el("p", provenance(), "pill"), el("p", snippet.note || ""), grid);
-    if (snippet.shared) {
-      const details = el("details");
-      details.append(el("summary", "Entra-authenticated Foundry clients"), el("pre", snippet.shared));
-      body.append(details);
+    body.replaceChildren(pill(viewSource(), run.source ? shownSource(run) : $("status").textContent),
+      el("h3", `${tab().title} · ${modeLabel(mode, tab().modes[mode])}`), steps, el("p", page.acceptance));
+    body.append(el("p", snippet.note || ""));
+    const context = el("div");
+    const agents = state.config.mode === "live" && !replayView() ? tab().agents?.[mode] : null;
+    for (const name of Object.keys(laneLabels)) {
+      const names = agentLine(`${laneLabels[name]} · configured Foundry agent`, agents?.[name]);
+      if (names) context.append(names);
     }
-    $("howto").showModal();
+    if (context.childElementCount) {
+      body.append(context, el("p", lever === "response_cache" ? supportAgentNote : orchestrationNote));
+      const link = portalLink();
+      if (link) body.append(link);
+    }
+    const livePath = el("p");
+    livePath.append("In Live, the app sends generation to ", el("code", "/openai/v1/responses"),
+      " with an ", el("code", "agent_reference"), " that names the published agent version. Azure reports cache reads and writes in ",
+      el("code", "input_tokens_details"), " when available. Inspect a receipt for the raw usage and confirmed response ID.");
+    body.append(livePath, details("Advanced · call a published Foundry agent", responsesExample),
+      el("p", "The side-by-side recipes below illustrate the lever with direct model calls.", "muted"), grid);
+    if (snippet.shared) body.append(details("Advanced · shared connection code for the recipes", snippet.shared));
+    const modal = $("howto");
+    modal.scrollTop = 0;
+    modal.showModal();
   } catch (error) { toast(error.message); }
+  finally { openingHowTo = false; }
 }
 
+let statusPending = false;
 async function checkStatus() {
+  if (statusPending || replayView() || state.config?.mode === "replay-only") return;
+  statusPending = true;
   try {
-    const code = sessionStorage.getItem("demo-access");
+    const code = savedCode();
     state.status = await api("/api/status", { headers: code ? { "X-Demo-Code": code } : {} });
   } catch {
-    state.status = { foundry: "error", mode: "live", detail: "Unable to reach the app.", missing_prices: [] };
-  }
+    state.status = { foundry: "error", mode: state.config?.mode || "live", unreachable: true,
+      detail: "Unable to reach the app.", missing_prices: [] };
+  } finally { statusPending = false; }
   statusUI();
-  if (state.config) buttons();
+  buttons();
 }
 
 function toggle(key, button, on) {
@@ -314,23 +517,24 @@ function toggle(key, button, on) {
   if (root.dataset[key] === on) delete root.dataset[key];
   else root.dataset[key] = on;
   $(button).setAttribute("aria-pressed", String(root.dataset[key] === on));
-  localStorage.setItem(key, root.dataset[key] || "");
+  writeStored("localStorage", key, root.dataset[key]);
 }
 
 $("dark").onclick = () => toggle("theme", "dark", "dark");
 $("large").onclick = () => toggle("large", "large", "true");
 $("howto-btn").onclick = howto;
-$("mode").onchange = e => { state.mode[state.lever] = e.target.value; renderRun(); };
+$("mode").onchange = e => { state.mode[state.lever] = e.target.value; brief(); renderRun(); };
 $("count").onchange = e => {
   state.count[state.lever] = Number(e.target.value);
-  delete state.runs[`${state.lever}/${state.mode[state.lever]}`];
+  delete state.runs[currentKey()];
+  brief();
   renderRun();
 };
 $("run-form").onsubmit = e => { e.preventDefault(); start(); };
 $("replay").onclick = () => start(true);
 document.addEventListener("keydown", event => {
   if (event.ctrlKey || event.altKey || event.metaKey || event.repeat || document.querySelector("dialog[open]")
-      || ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName)) return;
+      || ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName) || event.target.isContentEditable) return;
   const key = event.key.toLowerCase(), target = Object.keys(state.tabs)[Number(key) - 1];
   if (target) { event.preventDefault(); selectTab(target); }
   if (key === "r") start();
@@ -340,19 +544,21 @@ document.addEventListener("keydown", event => {
   if (key === "+") $("large").click();
 });
 for (const [key, button] of [["theme", "dark"], ["large", "large"]]) {
-  const value = localStorage.getItem(key);
+  const value = readStored("localStorage", key);
   if (value) {
     document.documentElement.dataset[key] = value;
     $(button).setAttribute("aria-pressed", "true");
   }
 }
 
-await checkStatus();
 try {
-  state.config = await api("/api/config");
-  for (const [key, data] of Object.entries({ ...state.config.tabs, scoreboard: { title: "Scoreboard" } })) {
+  const [, config] = await Promise.all([checkStatus(), api("/api/config")]);
+  state.config = config;
+  for (const [key, data] of Object.entries({ ...config.tabs, scoreboard: { title: "Scoreboard" } })) {
     const button = el("button", data.title);
     button.type = "button";
+    button.dataset.index = String(Object.keys(state.tabs).length + 1).padStart(2, "0");
+    button.setAttribute("aria-label", data.title);
     button.onclick = () => selectTab(key);
     state.tabs[key] = button;
     $("tabs").append(button);
@@ -361,6 +567,9 @@ try {
       state.count[key] = data.default;
     }
   }
-  await selectTab("prompt_caching");
+  selectTab("prompt_caching");
   setInterval(checkStatus, 5000);
-} catch (error) { toast(error.message); }
+} catch (error) {
+  $("startup-error").textContent = `The lab could not load. ${error.message} Reload to try again.`;
+  $("startup-error").hidden = false;
+}

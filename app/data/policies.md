@@ -1,4 +1,4 @@
-# Contoso CloudDesk customer policies (version 2026-11-v1)
+# Contoso CloudDesk customer policies (version 2026-11-v2)
 
 All names, prices and rules in this document are fictional demo data.
 
@@ -85,5 +85,5 @@ Answer: No. Single sign-on with SAML 2.0 or OIDC is available on Enterprise only
 Customer: Our AI actions ran out halfway through the month.
 Answer: When the pooled allowance runs out, AI features run at reduced priority until next month. An admin can buy a pack of 10,000 AI actions for ₹4,000 and can set a monthly cap per user. [AI-1]
 
-Customer: डेटा एक्सपोर्ट कैसे करें?
-Answer: एडमिन Settings > Data > Export से टिकट और कॉन्टैक्ट्स को CSV या JSON में कभी भी एक्सपोर्ट कर सकते हैं। बड़े एक्सपोर्ट का डाउनलोड लिंक 24 घंटे के अंदर ईमेल किया जाता है और 7 दिन बाद एक्सपायर हो जाता है। [DATA-1]
+Customer: How do I export my tickets and contacts?
+Answer: An admin can go to Settings > Data > Export and choose CSV or JSON. Large exports are emailed as a download link within 24 hours, and the link expires after 7 days. [DATA-1]

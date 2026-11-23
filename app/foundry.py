@@ -1,6 +1,7 @@
 """Foundry v1 clients and retry policy. Requests and transport failures never log credentials."""
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,9 +11,15 @@ from typing import Any, Protocol
 import httpx
 import openai
 from azure.core.exceptions import AzureError
-from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
+from azure.identity.aio import (
+    AzureCliCredential,
+    DefaultAzureCredential,
+    ManagedIdentityCredential,
+    get_bearer_token_provider,
+)
 from openai import AsyncOpenAI
 
+from .agents import AgentSpec, active_version, catalog, lane_keys
 from .settings import Settings
 
 
@@ -33,6 +40,10 @@ class Reply:
     usage: dict[str, Any]
     request_id: str | None = None
     fixture_latency_ms: int | None = None
+    agent: str | None = None
+    agent_version: str | None = None
+    response_id: str | None = None
+    sent: dict[str, Any] | None = None
 
 
 class ModelClient(Protocol):
@@ -70,7 +81,7 @@ def response_error(status: int) -> str:
         400: "Foundry rejected a request parameter or the requested model capability.",
         401: "Foundry did not accept the Entra credentials.",
         403: "Foundry denied access. Check the managed identity role and resource networking.",
-        404: "Foundry could not find the model deployment or API endpoint.",
+        404: "Foundry could not find the agent, deployment, or API endpoint.",
         429: "Foundry rate limit reached. Retry after quota is available.",
     }.get(status, f"Foundry returned HTTP {status}.")
 
@@ -91,20 +102,100 @@ async def with_retry(send: Callable[[], Awaitable[Reply]]) -> tuple[Reply, int]:
     raise AssertionError("Retry loop exhausted.")
 
 
+def response_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for msg in messages:
+        content = msg["content"]
+        parts = [{"text": content}] if isinstance(content, str) else content
+        result.append({"type": "message", "role": msg["role"],
+                       "content": [{**part, "type": "input_text"} for part in parts]})
+    return result
+
+
+def agent_reply(data: dict[str, Any], spec: AgentSpec, version: str,
+                request_id: str | None, sent: dict[str, Any]) -> Reply:
+    reference = data.get("agent_reference") or {}
+    response_id = data.get("id")
+    usage, model = data.get("usage"), data.get("model")
+    if (reference.get("name") != spec.name or reference.get("version") != version
+            or not isinstance(response_id, str) or not response_id):
+        raise ModelError("Foundry did not confirm execution by the selected agent version.")
+    if not isinstance(model, str) or not model or not isinstance(usage, dict):
+        raise ModelError("The Foundry agent response is missing model or usage details.")
+    messages = [part["text"] for item in (data.get("output") or [])
+                if item.get("type") == "message" and item.get("role") == "assistant"
+                for part in item["content"] if part.get("type") == "output_text"]
+    text = "".join(messages) if data.get("status") == "completed" else ""
+    return Reply(model, text, usage, request_id, agent=spec.name, agent_version=version,
+                 response_id=response_id, sent=sent)
+
+
 class LiveClient:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.credential = DefaultAzureCredential()
+        self.credential: ManagedIdentityCredential | AzureCliCredential | DefaultAzureCredential
+        if os.getenv("WEBSITE_SITE_NAME"):
+            self.credential = ManagedIdentityCredential()
+        elif settings.azure_tenant_id:
+            self.credential = AzureCliCredential(tenant_id=settings.azure_tenant_id)
+        else:
+            self.credential = DefaultAzureCredential()
         self.token = get_bearer_token_provider(self.credential, settings.azure_token_scope)
+        self.project_token = get_bearer_token_provider(self.credential, "https://ai.azure.com/.default")
         self.http = httpx.AsyncClient(timeout=60, follow_redirects=False)
         self.openai_http = httpx.AsyncClient(timeout=60, follow_redirects=False)
         self.openai = AsyncOpenAI(
             base_url=settings.azure_openai_base_url, api_key=self.token, max_retries=0,
             timeout=60, http_client=self.openai_http,
         )
+        self.project = settings.foundry_project_endpoint.rstrip("/")
+        self.agents = catalog(settings)
+        self.versions: dict[str, str] = {}
+
+    async def agent_version(self, spec: AgentSpec) -> str:
+        if spec.name in self.versions:
+            return self.versions[spec.name]
+        try:
+            token = await self.project_token()
+            response = await self.http.get(
+                f"{self.project}/agents/{spec.name}", params={"api-version": "v1"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            version = active_version(response.json(), spec)
+        except httpx.HTTPStatusError as exc:
+            raise ModelError(response_error(exc.response.status_code), exc.response.status_code) from None
+        except (httpx.RequestError, AzureError):
+            raise ModelError("Foundry agent lookup or Entra authentication failed.") from None
+        except ValueError:
+            raise ModelError(f"Publish the expected active definition of {spec.name}.") from None
+        return self.versions.setdefault(spec.name, version)
+
+    async def invoke_agent(self, spec: AgentSpec, body: dict[str, Any]) -> Reply:
+        version = await self.agent_version(spec)
+        sent = {
+            "agent_reference": {"type": "agent_reference", "name": spec.name, "version": version},
+            "input": response_input(body["messages"]),
+            "store": False,
+            **body.get("extra_body", {}),
+        }
+        token = await self.project_token()
+        response = await self.http.post(
+            f"{self.project}/openai/v1/responses", json=sent, headers={"Authorization": f"Bearer {token}"},
+        )
+        response.raise_for_status()
+        return agent_reply(response.json(), spec, version, response.headers.get("x-request-id"), sent)
 
     async def invoke(self, kind: str, deployment: str, body: dict[str, Any], ctx: CallContext) -> Reply:
         if kind in {"chat", "router"}:
+            schema = body.get("response_format", {}).get("json_schema", {}).get("name")
+            if ctx.lane in {"control", "candidate"} and schema != "invoice_review":
+                keys = lane_keys(ctx.lever, ctx.mode)[ctx.lane]
+                matching = [self.agents[key] for key in keys if self.agents[key].deployment == deployment]
+                if len(matching) != 1 or matching[0].schema != body.get("response_format"):
+                    raise ModelError("There is no matching Foundry agent for this lane and model.")
+                return await self.invoke_agent(matching[0], body)
+            # Health probes and the optional reviewer are not benchmark generation lanes.
             completion = await self.openai.chat.completions.create(model=deployment, **body)
             value = (completion.choices[0].message.content or "") if completion.choices else ""
             return Reply(completion.model, value, completion.usage.model_dump() if completion.usage else {},

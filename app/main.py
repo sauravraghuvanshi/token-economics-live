@@ -11,7 +11,8 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .dataset import load_dataset
+from .agents import catalog, lane_keys
+from .dataset import WORKLOAD_VERSION, load_dataset
 from .fake import FIXTURES, FakeClient
 from .foundry import CallContext, LiveClient, ModelClient, ModelError
 from .grading import parse_answer
@@ -148,6 +149,7 @@ def create_app(config: Settings | None = None, client: ModelClient | None = None
     async def configuration(request: Request) -> dict[str, Any]:
         demo = demo_for(request)
         cfg = demo.settings
+        agents = catalog(cfg) if cfg.source == "live" and not cfg.live_problem() else {}
         tabs: dict[str, Any] = {}
         for key, tab in TABS.items():
             invoice = key == "retry_killswitch"
@@ -161,13 +163,18 @@ def create_app(config: Settings | None = None, client: ModelClient | None = None
                   "expected_tier": r.tier} for r in demo.data.requests[key]]
             )
             tabs[key] = {**tab, "modes": modes, "requests": workloads,
+                         "agents": {mode: {lane: [agents[k].name for k in keys]
+                                           for lane, keys in lane_keys(key, mode).items()}
+                                    for mode in modes} if agents else {},
                          "recordings": [mode for mode in modes if demo.recordings.read(key, mode)],
                          "default": 3 if invoice else cfg.default_request_count,
                          "min": 3 if invoice else cfg.min_request_count, "max": 6 if invoice else cfg.max_request_count}
-        return {"tabs": tabs, "mode": cfg.source, "deployments": cfg.deployments,
+        return {"tabs": tabs, "mode": cfg.source, "workload_version": WORKLOAD_VERSION,
+                "deployments": cfg.deployments,
                 "access_code_required": cfg.source == "live" or cfg.access_code_configured,
                 "prompt_cache_mode": cfg.prompt_cache_mode, "pricing": demo.prices.model_dump(mode="json"),
-                "prefix_layout": demo.data.prefix_layout}
+                "prefix_layout": demo.data.prefix_layout,
+                "foundry_agents_url": "https://ai.azure.com/" if agents else None}
 
     @api.post("/api/runs", status_code=202)
     async def start(request: Request, body: StartRun, code: AccessHeader = None) -> dict[str, str]:

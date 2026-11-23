@@ -11,6 +11,7 @@ param deployModels string = 'false'
 param foundryResourceId string = ''
 param azureOpenAIBaseUrl string = ''
 param foundryEndpoint string = ''
+param foundryProjectEndpoint string = ''
 param foundryUserRoleId string
 param cognitiveServicesUserRoleId string = ''
 param vaultSecretsUserRoleId string
@@ -74,6 +75,7 @@ module web './modules/appservice.bicep' = {
     configuration: {
       AZURE_OPENAI_BASE_URL: useNew ? newFoundry!.outputs.openAIBaseUrl : azureOpenAIBaseUrl
       FOUNDRY_ENDPOINT: useNew ? newFoundry!.outputs.resourceEndpoint : foundryEndpoint
+      FOUNDRY_PROJECT_ENDPOINT: useNew ? newFoundry!.outputs.projectEndpoint : foundryProjectEndpoint
       FRONTIER_DEPLOYMENT: frontierDeployment
       SMALL_DEPLOYMENT: smallDeployment
       ROUTER_DEPLOYMENT: routerDeployment
@@ -82,7 +84,7 @@ module web './modules/appservice.bicep' = {
       TIGHT_KILL_SWITCH_USD: tightKillSwitchUsd
       NAIVE_SIMILARITY_THRESHOLD: naiveSimilarityThreshold
       PROMPT_CACHE_MODE: 'explicit'
-      PROMPT_CACHE_KEY: 'clouddesk:policies:v1'
+      PROMPT_CACHE_KEY: 'clouddesk:policies:v2'
       AZURE_TOKEN_SCOPE: 'https://cognitiveservices.azure.com/.default'
       FOUNDRY_MODE: 'live'
       REPLAY_ONLY: 'false'
@@ -142,4 +144,5 @@ output AZURE_KEY_VAULT_NAME string = web.outputs.vaultName
 output AZURE_APPLICATION_INSIGHTS_RESOURCE_ID string = monitor.outputs.id
 output AZURE_LOG_ANALYTICS_WORKSPACE_RESOURCE_ID string = monitor.outputs.workspaceId
 output DEPLOYED_FOUNDRY_RESOURCE_ID string = useNew ? newFoundry!.outputs.resourceId : foundryResourceId
+output FOUNDRY_PROJECT_ENDPOINT string = useNew ? newFoundry!.outputs.projectEndpoint : foundryProjectEndpoint
 output WEB_URI string = web.outputs.url

@@ -3,66 +3,111 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f3f2f7">
+  <meta name="theme-color" content="#f6f1e7">
   <title>Token Economics · Live</title>
+  <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
   <script type="module" src="/static/app.js"></script>
 </head>
 <body>
   <a class="skip" href="#workbench">Skip to demo controls</a>
   <header class="masthead">
-    <a class="brand" href="/" aria-label="Token Economics home"><span class="mark" aria-hidden="true">∑</span>
-      <span>Token Economics <b>· Live</b></span></a>
-    <nav id="tabs" aria-label="Demo levers"></nav>
-    <div class="header-actions">
-      <button id="howto-btn" type="button"><span aria-hidden="true">{ }</span> How to implement</button>
-      <button id="dark" type="button" aria-pressed="false" title="Dark mode (D)">Dark</button>
-      <button id="large" type="button" aria-pressed="false" aria-label="Larger text" title="Larger text (+)">A+</button>
+    <div class="mast-inner frame">
+      <a class="brand" href="/" aria-label="Token Economics home">
+        <img src="/static/mark.svg" alt="" width="34" height="34">
+        <span>Token Economics <b>· Live</b></span>
+      </a>
+      <div class="header-actions">
+        <button id="howto-btn" type="button" disabled><span class="braces" aria-hidden="true">{ }</span> How to implement</button>
+        <button id="dark" type="button" aria-pressed="false" title="Dark mode (D)">Dark</button>
+        <button id="large" type="button" aria-pressed="false" aria-label="Larger text" title="Larger text (+)">A+</button>
+      </div>
       <span id="status" class="pill offline" role="status">Connecting…</span>
     </div>
+    <nav id="tabs" class="frame" aria-label="Demo levers"></nav>
   </header>
-  <div id="banners" class="banners" aria-live="polite"></div>
-  <main id="workbench" tabindex="-1">
+  <div id="banners" class="banners frame" aria-live="polite"></div>
+  <main id="workbench" class="frame" tabindex="-1">
     <section class="intro">
-      <p class="eyebrow" id="eyebrow">01 / BENCHMARK · CONTOSO CLOUDDESK</p>
-      <h1 id="title">Prompt caching</h1>
-      <p class="subtitle" id="subtitle">Same content, same tokens. Only the order changes.</p>
+      <div>
+        <p class="eyebrow" id="eyebrow">Experiment 01 / 04 · Contoso CloudDesk</p>
+        <h1 id="title">Prompt caching</h1>
+        <p class="subtitle" id="subtitle">The same support questions, model and policies in both lanes.</p>
+      </div>
+      <aside class="criterion" aria-label="How we compare runs">
+        <span class="eyebrow">The unit that matters</span>
+        <strong>Cost per accepted outcome</strong>
+        <span>Total model cost <b aria-label="divided by">÷</b> outcomes that pass</span>
+      </aside>
     </section>
-    <section id="bench" aria-label="Run comparison">
-      <form class="controls" id="run-form">
-        <label>Mode <select id="mode"></select></label>
-        <label><span id="count-label">Requests</span> <select id="count"></select></label>
-        <button id="run" class="primary" type="submit" disabled>Run</button>
-        <button id="replay" type="button" disabled>Replay last run</button>
-        <span id="progress" class="measure" role="status"></span>
-      </form>
-      <div id="kpis" class="kpis" aria-label="Run metrics"></div>
-      <section id="layout" class="layout" aria-label="Prompt layout"></section>
-      <div id="comparison" class="comparison">
-        <section>
-          <div class="lane-labels"><span>Control · baseline</span><span>Candidate · one change</span></div>
-          <div id="requests" class="requests"></div>
-        </section>
-        <aside id="cache-panel" class="cache-panel" hidden></aside>
+    <p id="startup-error" class="empty-note" hidden></p>
+    <section id="bench" aria-label="Run comparison" hidden>
+      <div class="experiment">
+        <section id="brief" aria-label="Experiment setup"></section>
+        <form class="run-bar" id="run-form">
+          <label>Mode <select id="mode"></select></label>
+          <label><span id="count-label">Requests</span> <select id="count"></select></label>
+          <div class="run-actions">
+            <button id="run" class="primary" type="submit" disabled>Run</button>
+            <button id="replay" type="button" disabled>Replay last run</button>
+          </div>
+          <div class="run-status">
+            <span id="progress" class="measure" role="status"></span>
+            <progress id="run-meter" value="0" max="10" aria-label="Lane results received" hidden></progress>
+          </div>
+        </form>
+      </div>
+      <section class="ledger" aria-labelledby="ledger-title">
+        <div class="section-head">
+          <div class="section-title"><h2 id="ledger-title">Run ledger</h2><span id="evidence-source" class="pill" hidden></span><span id="foundry-portal" class="portal"></span></div>
+          <p>Without the lever <span aria-hidden="true">→</span><span class="sr-only"> compared with </span> <strong>With the lever</strong></p>
+        </div>
+        <div id="kpis" class="kpis" aria-label="Run metrics"></div>
+        <div id="readout" class="readout" aria-live="polite" aria-atomic="true"></div>
+      </section>
+      <div id="receipt-area" class="receipt-area">
+        <section id="layout" class="layout" aria-label="Prompt layout"></section>
+        <div id="comparison" class="comparison">
+          <section aria-labelledby="receipts-title">
+            <div class="section-head receipts-head">
+              <h2 id="receipts-title">Request receipts</h2>
+              <p id="receipt-note"></p>
+            </div>
+            <div class="lane-labels" aria-hidden="true">
+              <span><b>01</b> Without the lever</span><span><b>02</b> With the lever</span>
+            </div>
+            <div id="requests" class="requests"></div>
+          </section>
+          <aside id="cache-panel" class="cache-panel" hidden></aside>
+        </div>
       </div>
     </section>
     <section id="scoreboard" aria-label="Scoreboard" hidden></section>
   </main>
-  <footer><strong>Keep a change only if cost per accepted outcome falls and quality holds.</strong>
-    <span>1–5 Tabs · R Run · P Replay · H How-to</span></footer>
+  <footer class="footer"><div class="frame">
+    <p><span class="eyebrow">Decision rule</span> <strong>Keep a change only if cost per accepted outcome falls and quality holds.</strong></p>
+    <p class="shortcuts"><kbd>1–5</kbd> Tabs <kbd>R</kbd> Run <kbd>P</kbd> Replay <kbd>H</kbd> How-to <kbd>D</kbd> Dark <kbd>+</kbd> Larger text</p>
+  </div></footer>
   <div id="toast" class="toast" role="status" hidden></div>
-  <dialog id="inspect" class="drawer" aria-labelledby="inspect-title">
-    <div class="dialog-header"><h2 id="inspect-title">Inspect request</h2><form method="dialog"><button>Close</button></form></div>
-    <div id="inspect-body"></div>
+  <dialog id="inspect" class="drawer" aria-labelledby="inspect-accessible-title" aria-describedby="inspect-title">
+    <div class="dialog-header">
+      <div><p class="eyebrow">Request receipt</p><h2 id="inspect-title">Inspect request</h2></div>
+      <span id="inspect-accessible-title" class="sr-only"></span>
+      <form method="dialog"><button>Close</button></form>
+    </div>
+    <div id="inspect-body" class="dialog-content"></div>
   </dialog>
-  <dialog id="howto" aria-labelledby="howto-title">
-    <div class="dialog-header"><h2 id="howto-title">How to implement</h2><form method="dialog"><button>Close</button></form></div>
-    <div id="howto-body"></div>
+  <dialog id="howto" class="drawer howto-drawer" aria-labelledby="howto-title">
+    <div class="dialog-header">
+      <div><p class="eyebrow">Implementation notes</p><h2 id="howto-title">How to implement</h2></div>
+      <form method="dialog"><button>Close</button></form>
+    </div>
+    <div id="howto-body" class="dialog-content"></div>
   </dialog>
   <dialog id="access" aria-labelledby="access-title">
     <form method="dialog" class="access-form">
       <h2 id="access-title">Demo access code</h2>
-      <p>Required for actions that can spend your Azure demo budget.</p>
+      <p>Enter the presenter’s code to run the experiment or use the shared response cache. Watching a recording does not require a code.</p>
       <label>Access code <input id="access-code" type="password" maxlength="512" required autocomplete="off"></label>
       <div class="header-actions"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="allow">Continue</button></div>
     </form>

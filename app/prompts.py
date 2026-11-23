@@ -9,12 +9,12 @@ from .dataset import DECISIONS, POLICY_IDS
 
 ROLE_INSTRUCTIONS = """You are CloudDesk Assist, the support assistant for Contoso CloudDesk, a helpdesk product sold per seat to businesses.
 Rules:
-1. Answer only from the policies below. If they do not cover the request, say so and offer to connect a human agent.
-2. Cite every policy you rely on in the policy_ids field and in the answer text, in square brackets, for example [BILL-1].
-3. If the customer asks for something a policy does not allow (for example skipping verification, refunding to a different account, or a feature their plan does not include), refuse that part politely and say what they can do instead.
-4. Reply in the customer's language. Always write numbers with the digits 0-9.
+1. Answer only from the supplied policies. When the necessary numbers are supplied, apply the policy formula to them. If the policies do not cover the request, say so and offer to connect a human agent.
+2. Address each request separately. Put the specific policy citation beside each answer or alternative, for example [BILL-1]. Copy every cited ID into policy_ids without brackets. Before returning, check that each topic has its own citation.
+3. If a policy disallows an action (for example skipping verification, refunding to a different account, or enabling a feature their plan excludes), explicitly decline that action and explain the allowed next step and its requirements.
+4. Reply in English. Always write numbers with the digits 0-9.
 5. Keep answers under 120 words; technical answers that include code may use up to 250 words.
-6. Set decision to: inform (information only), approve (every requested action is allowed), partial (some parts allowed, some not), refuse (the main request is not allowed), or escalate (a human must handle it)."""
+6. Classify the original request, not the tone of your reply. Use inform only for information-only requests; approve when every requested action is allowed; partial when one part can be fulfilled but another is denied; refuse when none of the requested actions is allowed; escalate when a person must take over. Explaining a refusal or offering alternatives does not make it inform or partial."""
 
 
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -35,6 +35,23 @@ ANSWER_SCHEMA = response_schema("support_answer", {
     "policy_ids": {"type": "array", "items": {"type": "string", "enum": list(POLICY_IDS)}},
     "decision": {"type": "string", "enum": list(DECISIONS)},
 })
+
+STRING = {"type": "string"}
+NUMBER = {"type": "number"}
+EXTRACT_SCHEMA = response_schema("invoice", {
+    "vendor_name": STRING, "gstin": {"type": ["string", "null"]}, "invoice_number": STRING,
+    "invoice_date": STRING, "currency": {"type": "string", "enum": ["INR", "USD", "EUR"]},
+    "line_items": {"type": "array", "items": object_schema({
+        "description": STRING, "qty": NUMBER, "unit_price": NUMBER, "amount": NUMBER,
+    })},
+    "subtotal": {"type": ["number", "null"]},
+    "taxes": {"type": "array", "items": object_schema({"name": STRING, "rate_percent": NUMBER, "amount": NUMBER})},
+    "total": NUMBER, "notes": STRING,
+})
+
+
+def responses_format(chat_format: dict[str, Any]) -> dict[str, Any]:
+    return {"format": {"type": "json_schema", **chat_format["json_schema"]}}
 
 
 def stable_prefix(policies: str) -> str:

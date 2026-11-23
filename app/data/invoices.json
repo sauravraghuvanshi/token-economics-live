@@ -15,6 +15,6 @@
    "ocr_text": "KAVERI FACILITY SERVICES\nGSTIN: 29AAGFK1357P1Z6\nInvoice No: KFS-3320   Date: 12-11-2026\nBill to: Contoso CloudDesk Pvt Ltd, Bengaluru\nItem                    Qty   Rate     Amount\nHousekeeping (Nov)      1     42,000   42,000\nPantry supplies         1     6,000    9,000\nSubtotal                               48,000\nGST 18%                                8,640\nTotal (INR)                            56,640",
    "expected": {"currency": "INR", "gstin": "29AAGFK1357P1Z6", "total": 56640, "outcome": "accepted after a retry"}},
   {"id": "inv-06", "title": "Runaway trap: EUR invoice and a faulty currency tool", "kind": "runaway",
-   "ocr_text": "FABRIKAM DESIGN GMBH\nRechnung / Invoice: FD-2026-118   Date: 14.11.2026\nBill to: Contoso CloudDesk Pvt Ltd\nItem                    Qty  Unit price  Amount\nUX research sprint      1    3,500.00    3,500.00\nPrototype testing       1    1,500.00    1,500.00\nTotal (EUR)                              5,000.00",
+   "ocr_text": "FABRIKAM DESIGN GMBH\nInvoice: FD-2026-118   Date: 14.11.2026\nBill to: Contoso CloudDesk Pvt Ltd\nItem                    Qty  Unit price  Amount\nUX research sprint      1    3,500.00    3,500.00\nPrototype testing       1    1,500.00    1,500.00\nTotal (EUR)                              5,000.00",
    "expected": {"currency": "EUR", "total": 5000, "outcome": "handoff (the simulated currency tool always fails)"}}
 ]

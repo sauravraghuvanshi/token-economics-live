@@ -45,6 +45,9 @@ class CallSession:
                "x_request_id": reply.request_id, "transport_retries": retries,
                "latency_ms": reply.fixture_latency_ms if reply.fixture_latency_ms is not None
                else max(0, (end - start) // 1_000_000)}
+        if reply.agent:
+            row.update(foundry_agent=reply.agent, foundry_agent_version=reply.agent_version,
+                       foundry_response_id=reply.response_id, sent=reply.sent)
         try:
             usage = Usage.normalise(kind, reply.usage)
         except ValueError as exc:
@@ -95,6 +98,9 @@ class CallSession:
             model_span({
                 "lever": ctx.lever, "mode": ctx.mode, "lane": ctx.lane, "request_id": ctx.request_id,
                 "deployment": row["deployment"], "response_model": row.get("response_model"),
+                "foundry_agent": row.get("foundry_agent"),
+                "foundry_agent_version": row.get("foundry_agent_version"),
+                "foundry_response_id": row.get("foundry_response_id"),
                 "prompt_tokens": u.get("prompt"), "cached_tokens": u.get("cached"),
                 "cache_write_tokens": u.get("cache_write"), "completion_tokens": u.get("completion"),
                 "reasoning_tokens": u.get("reasoning"), "cost_usd": row["cost_usd"], "pass": passed,

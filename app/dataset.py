@@ -14,6 +14,7 @@ POLICY_IDS = ("BILL-1", "BILL-2", "BILL-3", "SEAT-1", "SEAT-2", "DATA-1", "DATA-
               "SEC-1", "SEC-2", "SLA-1", "AI-1")
 DECISIONS = ("inform", "approve", "partial", "refuse", "escalate")
 SUPPORT_LEVERS = ("prompt_caching", "model_routing", "response_cache")
+WORKLOAD_VERSION = "english-foundry-v5"
 
 
 class Expectations(BaseModel):
@@ -27,7 +28,7 @@ class Expectations(BaseModel):
 class Request(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
-    lang: Literal["en", "hi"]
+    lang: Literal["en"]
     text: str = Field(min_length=1)
     category: Literal["routine", "multi-policy", "trap", "deep-reasoning"] = "routine"
     tier: Literal["small", "frontier"] | None = None

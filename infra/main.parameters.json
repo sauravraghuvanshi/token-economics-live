@@ -9,6 +9,7 @@
     "foundryResourceId": {"value": "${FOUNDRY_RESOURCE_ID=}"},
     "azureOpenAIBaseUrl": {"value": "${AZURE_OPENAI_BASE_URL=}"},
     "foundryEndpoint": {"value": "${FOUNDRY_ENDPOINT=}"},
+    "foundryProjectEndpoint": {"value": "${FOUNDRY_PROJECT_ENDPOINT=}"},
     "foundryUserRoleId": {"value": "${FOUNDRY_USER_ROLE_ID}"},
     "cognitiveServicesUserRoleId": {"value": "${COGNITIVE_SERVICES_USER_ROLE_ID=}"},
     "vaultSecretsUserRoleId": {"value": "${VAULT_SECRETS_USER_ROLE_ID}"},

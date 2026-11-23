@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .dataset import WORKLOAD_VERSION
 from .guards import save_json
 from .settings import ROOT, Settings
 
@@ -29,6 +30,8 @@ class Recordings:
                 continue
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
+                if data.get("workload_version") != WORKLOAD_VERSION:
+                    continue
                 if (data["schema"] != 1 or data["lever"] != lever or data["mode"] != mode
                         or data["source"] not in {"live", "fake"} or not data["summary"]["complete"]
                         or data["events"][0]["event"] != "run_started"
@@ -45,7 +48,10 @@ class Recordings:
 
     def scoreboard(self) -> list[dict[str, Any]]:
         try:
-            return json.loads(self.board.read_text(encoding="utf-8")) if self.board.exists() else []
+            if not self.board.exists():
+                return []
+            return [row for row in json.loads(self.board.read_text(encoding="utf-8"))
+                    if row.get("workload_version") == WORKLOAD_VERSION]
         except (OSError, ValueError):
             LOG.error("The scoreboard could not be loaded.")
             return []

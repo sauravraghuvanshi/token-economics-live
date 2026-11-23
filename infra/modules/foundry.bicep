@@ -28,4 +28,5 @@ resource project 'Microsoft.CognitiveServices/accounts/projects@2025-06-01' = {
 
 output resourceId string = account.id
 output resourceEndpoint string = account.properties.endpoints['AI Foundry API']
+output projectEndpoint string = project.properties.endpoints['AI Foundry API']
 output openAIBaseUrl string = '${account.properties.endpoints['Azure OpenAI Legacy API - Latest moniker']}openai/v1/'

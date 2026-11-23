@@ -4,7 +4,8 @@ import asyncio
 import time
 from typing import Any
 
-from .foundry import CallContext, ModelError
+from .agents import AgentSpec
+from .foundry import CallContext, LiveClient, ModelError
 from .guards import SpendLimit
 from .runs import Demo
 
@@ -15,6 +16,7 @@ class StatusProbe:
         self.problem = problem
         self.checked = -1e9
         self.deployments: dict[str, str] = {}
+        self.agents: dict[str, str] = {}
         self.detail = problem or "Checking Foundry deployments."
         self.task: asyncio.Task | None = None
 
@@ -49,12 +51,22 @@ class StatusProbe:
                 calls.report(None)
                 return (name, "error", str(error))
 
-        results = await asyncio.gather(*(probe(role, name) for role, name in
-                                         self.demo.settings.deployments.items()))
+        async def verify(client: LiveClient, spec: AgentSpec) -> tuple[str, str, str]:
+            try:
+                await client.agent_version(spec)
+                return (spec.name, "ok", "")
+            except ModelError as error:
+                return (spec.name, "error", str(error))
+
+        model = self.demo.client
+        deployment_checks = [probe(role, name) for role, name in self.demo.settings.deployments.items()]
+        agent_checks = [verify(model, spec) for spec in model.agents.values()] if isinstance(model, LiveClient) else []
+        results = await asyncio.gather(*deployment_checks, *agent_checks)
         self.checked = time.monotonic()
-        self.deployments = {name: status for name, status, _ in results}
+        self.deployments = {name: status for name, status, _ in results[:len(deployment_checks)]}
+        self.agents = {name: status for name, status, _ in results[len(deployment_checks):]}
         self.detail = next((f"{name}: {detail}" for name, status, detail in results if status == "error"),
-                           "All configured deployments responded.")
+                           "Model deployments and Foundry agents are ready.")
 
     def payload(self) -> dict[str, Any]:
         mode = self.demo.settings.source
@@ -63,9 +75,10 @@ class StatusProbe:
             detail = "Synthetic data and fixture prices. No Azure calls."
         elif mode == "replay-only":
             detail = "Offline playback. No Azure calls."
-        ok = bool(self.deployments) and all(v == "ok" for v in self.deployments.values())
+        ok = bool(self.deployments) and all(v == "ok" for v in (*self.deployments.values(), *self.agents.values()))
         return {
             "mode": mode, "foundry": "ok" if ok else "error", "detail": detail, "deployments": self.deployments,
+            "agents": self.agents,
             "prices_verified": self.demo.prices_verified, "verified_on": self.demo.prices.verified_on,
             "missing_prices": sorted(self.demo.missing),
         }
