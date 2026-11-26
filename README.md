@@ -358,6 +358,44 @@ customEvents
   credentials, then play the exported recordings from `replays/`. Check this
   on the presenting laptop offline before the event.
 
+## Hosted verification — 26 November 2026 (V6.4)
+
+[GitHub Actions](https://github.com/sauravraghuvanshi/token-economics-live/actions/runs/45854094935)
+tested and published `48f0034` to the existing App Service. Live verification
+passed **90 of 90 comparisons**: five rounds of all nine modes at both the
+default sizes (five questions or three invoices) and full sizes (10 or six).
+Five deployments and six named Foundry agents were ready with verified list
+prices.
+
+| Mode | Accepted, without → with | Measured result across five full-size rounds |
+|---|---|---|
+| Prompt caching | 10/10 → 10/10 | 69.08–78.30% lower cost; cached input reads confirmed |
+| Guided Foundry router | 10/10 → 10/10 | 28.23–30.47% lower fresh-input cost including classifier, router and automatic cache-write charges |
+| Decision router | 10/10 → 10/10 | 11.97–27.88% lower cost |
+| Small-only | 10/10 → 10/10 | 72.35–74.45% lower cost; no quality loss observed in these rounds |
+| Fact-guarded cache | 10/10 → 10/10 | Four answer hits; 37.23–39.08% lower cost, with no input-cache reads or writes |
+| Naive cache | 10/10 → 8/10 | Both changed-fact hits failed as expected |
+| Three-retry guardrail | 4/6 → 4/6 | Six versus four attempts on each simulated FX failure |
+| No retries | 4/6 → 2/6 | Recoverable invoices handed off as expected |
+| Tight kill switch | 4/6 → 2/6 | Spend limit stopped failed first attempts as expected |
+
+Guided routing sent six routine answers to GPT-4.1-mini and four complex
+answers to GPT-6.1 Sol in every full-size round; the default split was three
+and two. Full-size support batches took 32.58–63.77 seconds. In the separate
+Decision router mode, one default-size run cost 3.62% more despite preserving
+all five answers.
+
+The $2 rolling-hour guard interrupted four runs, retained separately. The
+checks resumed after spend aged out without a cap increase. In a separate
+Live run, Stop blocked a third baseline attempt, charged the completed
+in-flight attempt, and let the candidate finish. The previous recording and
+Scoreboard stayed unchanged.
+
+The [nine full-size recordings](replays/) are from round five. All nine
+reproduced the exact recorded rows and KPIs offline without network calls.
+The savings describe this workload and its measured cache state, not a
+forecast for other traffic.
+
 ## Historical hosted verification — 23 November 2026 (v5)
 
 The `english-foundry-v5` deployment passed **45 of 45** end-to-end comparisons
