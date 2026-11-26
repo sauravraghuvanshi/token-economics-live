@@ -10,7 +10,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       FOUNDRY_MODE: fake
     outputs:
@@ -52,6 +52,42 @@ jobs:
           print(f"workload-version={WORKLOAD_VERSION}")
           PY
           python -m zipfile -t "$zip"
+      - name: Install Chromium for presenter verification
+        run: python -m playwright install --with-deps --only-shell chromium
+      - name: Exercise the packaged demo
+        shell: bash
+        env:
+          TIGHT_KILL_SWITCH_USD: '0.0007'
+        run: |
+          package="$RUNNER_TEMP/tokecon-package"
+          reports="$RUNNER_TEMP/tokecon-smoke"
+          python -m zipfile -e "$RUNNER_TEMP/tokecon.zip" "$package"
+          (
+            cd "$package"
+            exec gunicorn --workers 1 --worker-class uvicorn.workers.UvicornWorker \
+              --timeout 600 --bind 127.0.0.1:8000 app.main:app
+          ) > "$RUNNER_TEMP/tokecon.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          site=http://127.0.0.1:8000
+          if ! timeout 30 bash -c 'until curl -fs --max-time 2 "$1/healthz" >/dev/null; do sleep 1; done' _ "$site"; then
+            cat "$RUNNER_TEMP/tokecon.log"
+            exit 1
+          fi
+          curl -fsS --max-time 10 "$site/static/build.json" | jq -e --arg sha "$GITHUB_SHA" '.commit == $sha'
+          smoke=(python -m scripts.smoke_test --base-url "$site" --source fake --rounds 5 --assert-stories --verify-replays)
+          "${smoke[@]}" --output "$reports/default.json"
+          "${smoke[@]}" --max-counts --output "$reports/maximum.json"
+          python -m scripts.browser_test --base-url "$site" --source fake
+      - name: Retain the synthetic comparison results
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tokecon-fake-smoke
+          path: ${{ runner.temp }}/tokecon-smoke/*.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
       - name: Retain the App Service package
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

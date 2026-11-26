@@ -57,10 +57,10 @@ $env:FOUNDRY_MODE = 'fake'
 .\.venv\Scripts\python.exe -m scripts.smoke_test --base-url http://127.0.0.1:8000 --source fake --rounds 5 --max-counts --assert-stories --verify-replays
 ```
 
-For browser verification, install `playwright==1.58.0` in the same environment
-and run `python -m scripts.browser_test --channel msedge`. Alternatively, run
-`python -m playwright install chromium` and omit `--channel`. Both typefaces
-are self-hosted with their open font licenses; playback needs no CDN.
+For browser verification, run `python -m scripts.browser_test --channel msedge`
+in the same environment. Alternatively, run `python -m playwright install chromium`
+and omit `--channel`. Both typefaces are self-hosted with their open font
+licenses; playback needs no CDN.
 
 ## Azure configuration and deployment
 
@@ -188,9 +188,11 @@ status refresh is limited to once per minute.
 ### GitHub Actions releases
 
 [The workflow](.github/workflows/ci-deploy.yml) runs offline on pushes and pull
-requests. It checks Python and browser scripts, then packages the tested revision
-without local state or stale recordings. Only the current `main` revision in the
-[private repository](https://github.com/sauravraghuvanshi/token-economics-live)
+requests. It packages the tested revision without local state or stale recordings,
+then exercises that ZIP with five Fake rounds and replays at each workload size.
+Chromium verifies the nine modes at two projector sizes and on mobile. Main's
+`tokecon-fake-smoke` artifact contains the synthetic results, not Azure measurements.
+Only the current `main` revision in the [private repository](https://github.com/sauravraghuvanshi/token-economics-live)
 can deploy. The publish job is disabled until `AZURE_DEPLOY_ENABLED` is `true`.
 
 For the one-time setup, use PowerShell 7.4+ in this checkout, signed into the
@@ -202,14 +204,17 @@ owner's account. Preview the changes first:
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $repo = 'sauravraghuvanshi/token-economics-live'
+$sub = '6e73c798-4f1a-4ada-b279-b64f9ce1278d'
 $group = 'rg-tokecon-demo'
 $app = 'app-tokecon-q7yxpkuusfxba'
+az account get-access-token --subscription $sub --resource 'https://management.azure.com/' --output none
 $oidc = gh api "repos/$repo/actions/oidc/customization/sub" | ConvertFrom-Json
 if (!$oidc.use_default -or !$oidc.use_immutable_subject -or !$oidc.sub_claim_prefix) {
     throw 'Expected the default immutable GitHub OIDC subject.'
 }
 $subject = "$($oidc.sub_claim_prefix):ref:refs/heads/main"
-$identityArgs = @('--resource-group', $group, '--template-file', '.\infra\github-actions.bicep',
+$identityArgs = @('--subscription', $sub, '--resource-group', $group,
+    '--template-file', '.\infra\github-actions.bicep',
     '--parameters', "webAppName=$app", "githubSubject=$subject")
 az deployment group what-if @identityArgs
 ```
@@ -223,14 +228,24 @@ profile, client secret, or demo access code goes into GitHub.
 $clientId = az deployment group create @identityArgs --name tokecon-github-actions `
     --query properties.outputs.clientId.value --output tsv
 gh variable set AZURE_CLIENT_ID --repo $repo --body $clientId
-gh variable set AZURE_TENANT_ID --repo $repo --body (az account show --query tenantId -o tsv)
-gh variable set AZURE_SUBSCRIPTION_ID --repo $repo --body (az account show --query id -o tsv)
+gh variable set AZURE_TENANT_ID --repo $repo --body (az account show --subscription $sub --query tenantId -o tsv)
+gh variable set AZURE_SUBSCRIPTION_ID --repo $repo --body $sub
 gh variable set AZURE_RESOURCE_GROUP --repo $repo --body $group
 gh variable set AZURE_WEBAPP_NAME --repo $repo --body $app
 ```
 
-Once Azure authorization has propagated and the existing live Foundry setup
-has been verified, enable publishing and trigger a fresh run:
+Before enabling publishing, confirm `/api/status` reports the existing models
+and agents as ready. Verify the router's deployed pool from Azure:
+
+```powershell
+$router = "/subscriptions/$sub/resourceGroups/$group/providers/Microsoft.CognitiveServices/accounts/ai-tokecon-q7yxpkuusfxba/deployments/model-router"
+az rest --method get --url "https://management.azure.com${router}?api-version=2025-10-01-preview" `
+    --query '{state:properties.provisioningState,models:properties.routing.models[].name}'
+```
+
+Proceed when authorization has propagated and the router reports `Succeeded`
+with GPT-4.1-mini and at least one of GPT-4.1 or GPT-6.1 Sol. Then enable
+publishing and trigger a fresh run:
 
 ```powershell
 gh variable set AZURE_DEPLOY_ENABLED --repo $repo --body 'true'
