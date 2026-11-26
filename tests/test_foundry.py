@@ -173,7 +173,7 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
                                              "answers": {"tier": {"choice": tier, "probabilities": {tier: certainty}}}})
         assert request.url.path.endswith("/openai/v1/responses")
         assert sent["store"] is False
-        assert not {"prompt_cache_key", "prompt_cache_options"} & sent.keys()
+        assert "prompt_cache_key" not in sent
         assert "prompt_cache_breakpoint" not in json.dumps(sent["input"])
         assert sent["input"][1]["content"][0]["text"].startswith("Received now")
         assert sent["input"][1]["content"][0]["text"].endswith("Policy corpus")
@@ -181,8 +181,10 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
             baseline_input = sent["input"]
             mode, model = None, settings.frontier_deployment
             assert "routing_config" not in sent
+            assert sent["prompt_cache_options"] == {"mode": "explicit"}
         else:
             assert request.headers["Foundry-Features"] == "ModelRouterControls=V1Preview"
+            assert "prompt_cache_options" not in sent
             assert sent["agent_reference"] == {"type": "agent_reference", "name": spec.name, "version": "2"}
             assert selected is not None
             _, _, mode, model = selected

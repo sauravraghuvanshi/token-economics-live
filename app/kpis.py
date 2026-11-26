@@ -51,10 +51,14 @@ def kpis(results: list[dict[str, Any]], *, lever: str, mode: str, baseline_stop_
                           for lane in ("control", "candidate")]
     complete = control["complete"] and candidate["complete"]
     baseline_stopped = any(row["lever_detail"].get("manual_stop") for row in results)
-    isolate_input_cache = lever == "response_cache" or (lever, mode) == ("model_routing", "foundry_router")
-    prompt_cache_activity = isolate_input_cache and any(
-        lane["tokens"][key] for lane in (control, candidate) for key in ("cached", "cache_write")
-    )
+    prompt_cache_activity = False
+    if lever == "response_cache":
+        prompt_cache_activity = any(lane["tokens"][key] for lane in (control, candidate)
+                                    for key in ("cached", "cache_write"))
+    elif (lever, mode) == ("model_routing", "foundry_router"):
+        # The candidate pays all reported router writes; only reuse or a baseline write invalidates the run.
+        prompt_cache_activity = bool(control["tokens"]["cached"] or control["tokens"]["cache_write"]
+                                     or candidate["tokens"]["cached"])
     savings, change, quality = None, None, None
     if not baseline_stop_requested and not prompt_cache_activity and control["done"] == candidate["done"] > 0:
         quality = candidate["accepted"] >= control["accepted"]

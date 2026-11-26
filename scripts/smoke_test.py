@@ -146,10 +146,13 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
     if check_stories:
         control, candidate_summary = summary["control"], summary["candidate"]
         candidate = [r for r in rows if r["lane"] == "candidate"]
-        if (lever == "response_cache" or mode == "foundry_router") and any(
+        if lever == "response_cache" and any(
             lane["tokens"][key] for lane in (control, candidate_summary) for key in ("cached", "cache_write")
         ):
-            failures.append("Prompt-cache reads or writes contaminated the comparison.")
+            failures.append("Prompt-cache reads or writes contaminated the response-cache comparison.")
+        if mode == "foundry_router" and (control["tokens"]["cached"] or control["tokens"]["cache_write"]
+                                         or candidate_summary["tokens"]["cached"]):
+            failures.append("Prompt-cache reuse or a baseline write contaminated the guided routing comparison.")
         if lever == "response_cache":
             if control["model_calls"] != count or control["cache_hits"] or candidate_summary["model_calls"] >= count:
                 failures.append("Only the candidate should skip generation on cache hits.")

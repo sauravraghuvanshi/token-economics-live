@@ -229,28 +229,32 @@ def test_stop_blocks_future_baseline_retries_without_replacing_evidence(tmp_path
         assert api.post(stop, headers=headers).status_code == 409
 
 
-@pytest.mark.parametrize(("lever", "mode", "request_id"), [
-    ("response_cache", "fact_guarded", "rc-01"),
-    ("model_routing", "foundry_router", "mr-01"),
+@pytest.mark.parametrize(("lever", "mode", "request_id", "lane", "meter", "comparable"), [
+    ("response_cache", "fact_guarded", "rc-01", "control", "cached_tokens", False),
+    ("response_cache", "fact_guarded", "rc-01", "candidate", "cache_write_tokens", False),
+    ("model_routing", "foundry_router", "mr-01", "control", "cache_write_tokens", False),
+    ("model_routing", "foundry_router", "mr-03", "candidate", "cached_tokens", False),
+    ("model_routing", "foundry_router", "mr-03", "candidate", "cache_write_tokens", True),
 ])
-def test_input_cache_meter_activity_invalidates_isolated_comparison(tmp_path, lever, mode, request_id):
+def test_input_cache_meters_control_isolated_verdict(tmp_path, lever, mode, request_id, lane, meter, comparable):
     settings = Settings(foundry_mode="fake", data_dir=tmp_path)
 
     class LeakyProvider(FakeClient):
         async def invoke(self, kind, deployment, body, ctx):
             reply = await super().invoke(kind, deployment, body, ctx)
-            if (ctx.request_id, ctx.lane) == (request_id, "control"):
-                return replace(reply, usage={**reply.usage, "prompt_tokens_details": {"cached_tokens": 1024}})
+            if (ctx.request_id, ctx.lane) == (request_id, lane) and kind in {"chat", "router"}:
+                return replace(reply, usage={**reply.usage, "prompt_tokens_details": {meter: 1024}})
             return reply
 
     with TestClient(create_app(settings, LeakyProvider(settings))) as api:
         run_id = start(api, lever, mode, 5)
         completed = get_events(api, run_id)[-1][1]
         summary = completed["summary"]
-        assert summary["control"]["tokens"]["cached"] == 1024
-        assert summary["complete"] and summary["prompt_cache_activity"]
-        assert summary["savings_pct"] is None and not completed["saved_replay"]
-        assert api.get("/api/scoreboard").json() == {"runs": []}
+        bucket = "cached" if meter == "cached_tokens" else "cache_write"
+        assert summary[lane]["tokens"][bucket] == 1024
+        assert summary["complete"] and summary["prompt_cache_activity"] is not comparable
+        assert (summary["savings_pct"] is not None) == completed["saved_replay"] == comparable
+        assert len(api.get("/api/scoreboard").json()["runs"]) == int(comparable)
 
 
 def test_rolling_spend_survives_restart(tmp_path):
