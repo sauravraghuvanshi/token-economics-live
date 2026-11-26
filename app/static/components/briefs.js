@@ -47,11 +47,11 @@ export const experiments = {
     ],
   },
   foundry_router: {
-    change: "Classify the question, then let Foundry Model Router answer from the low-cost or quality pool. This uses preview routing controls.",
+    change: "Classify the question, then use Foundry Model Router to send routine cases to GPT-4.1-mini and hard cases to the same frontier model as the baseline.",
     watch: "Compare the actual model mix. Inspect each answer for the chosen pool, classifier cost and router fee.",
     steps: [
       "Keep the policy prompt and grading rules unchanged. Use a policy-first prompt supported by every eligible model.",
-      "Use the classifier on question text alone. A confident routine result gets the low-cost pool; harder or uncertain cases get the quality pool.",
+      "Use the classifier on question text alone. Confident routine cases get the low-cost pool; hard or uncertain cases keep the baseline model in the quality pool.",
       "Send the eligible models to the same Foundry router. Check the mode and model in its response, and count both the classifier and routing fee.",
     ],
   },

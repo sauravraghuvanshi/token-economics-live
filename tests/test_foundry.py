@@ -151,10 +151,10 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
     spend = SpendWindow(tmp_path / "spend.json", Decimal("2"))
     settings_by_question = {
         "When does the trial end?": ("small", 0.98, "cost", "gpt-4.1-mini-2025-04-14"),
-        "Can I bypass login and get a prorated refund?": ("frontier", 0.98, "quality", "gpt-4.1-2025-04-14"),
+        "Can I bypass login and get a prorated refund?": ("frontier", 0.98, "quality", "gpt-6.1-sol-2026-09-29"),
         "Would that also apply here?": ("small", 0.61, "quality", "gpt-6.1-sol-2026-09-29"),
     }
-    ranking_pool = {"cost": ["gpt-4.1-mini"], "quality": ["gpt-4.1", "gpt-6.1-sol"]}
+    ranking_pool = {"cost": ["gpt-4.1-mini"], "quality": ["gpt-6.1-sol"]}
     selected = None
     invalid = None
     posted = []

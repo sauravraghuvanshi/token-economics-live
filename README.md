@@ -12,7 +12,7 @@ The current English workload supersedes the original multilingual examples.
 | Experiment | Without the lever | With the lever |
 |---|---|---|
 | Prompt caching | The question changes the leading text. | Shared policies come first; compare cache writes and reads while every question still gets a fresh answer. |
-| Model routing | The frontier model answers every question. | Decision classifies just the question. Foundry Model Router uses GPT-4.1-mini for confident routine cases and selects GPT-4.1 or GPT-6.1 Sol for harder or uncertain cases. Inspect shows the model that answered, the reported routing mode and both fees. |
+| Model routing | The frontier model answers every question. | Decision classifies just the question. Foundry Model Router uses GPT-4.1-mini for confident routine cases and keeps GPT-6.1 Sol for harder or uncertain cases. Inspect shows the model that answered, the reported routing mode and both fees. |
 | Response caching | Every question gets a fresh answer. | An exact fact match skips generation. Both lanes disable provider prompt caching on the supported deployment. If either lane reports input-cache reads or writes, the app shows the raw totals but does not publish an isolated savings verdict. |
 | Retry & kill switch | The agent retries failures even when evidence repeats, up to six attempts per invoice. | The default allows one initial attempt and three retries at most. A tighter token or spend rule can stop earlier. |
 

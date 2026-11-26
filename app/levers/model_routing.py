@@ -17,7 +17,8 @@ TIER_QUESTION = {
 }
 ROUTER_POOLS = {
     "cost": ("gpt-4.1-mini",),
-    "quality": ("gpt-4.1", "gpt-6.1-sol"),
+    # Keep hard cases on the baseline's model; cold GPT-4.1 inputs erased routing savings.
+    "quality": ("gpt-6.1-sol",),
 }
 MODEL_VERSION_SUFFIX = re.compile(r"-[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
@@ -64,8 +65,8 @@ async def route(calls: CallSession, cfg: Settings, policies: str, text: str, tim
                 router_mode = "cost" if small else "quality"
             elif small:
                 deployment, detail["tier"] = cfg.small_deployment, "small"
-    # GPT-4.1 rejects explicit breakpoint fields. Use one compatible layout
-    # for BOTH lanes and all eligible models in this benchmark.
+    # Use the same policy-first layout for both lanes, without explicit
+    # breakpoint fields that GPT-4.1-mini does not support.
     pool = ROUTER_POOLS[router_mode] if router_mode else ()
     controls = {"routing_config": {
         "mode": router_mode, "models": list(pool), "session_affinity": {"strategy": "none"},
@@ -79,7 +80,7 @@ async def route(calls: CallSession, cfg: Settings, policies: str, text: str, tim
             raise ModelError(f"Foundry did not confirm the {router_mode} routing pool. "
                              "Check preview support on the published router agent.")
         detail.update(router_mode=reply.routing_mode, eligible_models=list(pool),
-                      tier={"gpt-4.1-mini": "small", "gpt-4.1": "mid", "gpt-6.1-sol": "frontier"}[family])
+                      tier="small" if router_mode == "cost" else "frontier")
         for line in calls.calls[-1]["calculation"]:
             if line["label"] == "router fee (all input)":
                 detail["routing_fee_usd"] = line["cost_usd"]

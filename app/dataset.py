@@ -14,7 +14,7 @@ POLICY_IDS = ("BILL-1", "BILL-2", "BILL-3", "SEAT-1", "SEAT-2", "DATA-1", "DATA-
               "SEC-1", "SEC-2", "SLA-1", "AI-1")
 DECISIONS = ("inform", "approve", "partial", "refuse", "escalate")
 SUPPORT_LEVERS = ("prompt_caching", "model_routing", "response_cache")
-WORKLOAD_VERSION = "english-foundry-v6"
+WORKLOAD_VERSION = "english-foundry-v6.1"
 
 
 class Expectations(BaseModel):
