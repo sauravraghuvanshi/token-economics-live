@@ -367,8 +367,8 @@ Do **not** set `temperature` or `top_p` (some reasoning models reject them). Use
 
 | Layout | Used by | Messages |
 |---|---|---|
-| **Customer first** (breaks the prefix) | Tab 1 control | `system`: `ROLE_INSTRUCTIONS` only. `user`: `"Received <ISO time> · ticket <id>\nCustomer: <message>\n\n## Policies\n\n<policies.md>"` |
-| **Policies first** (stable prefix) | Tab 1 candidate and both lanes of tab 2 | `system`: stable prefix. `user`: `"Customer: <message>\n\n(received <ISO time> · ticket <id>)"`. Use `prompt_cache_key = PROMPT_CACHE_KEY`. Tab 1 candidate adds an explicit breakpoint and 30-minute TTL when `PROMPT_CACHE_MODE=explicit`; tab 2 omits explicit fields for older eligible models. |
+| **Customer first** (breaks the prefix) | Tab 1 control and both lanes of tab 2 Guided Foundry | `system`: `ROLE_INSTRUCTIONS` only. `user`: `"Received <ISO time> · ticket <id>\nCustomer: <message>\n\n## Policies\n\n<policies.md>"`. Guided Foundry also requests explicit mode without a breakpoint on the frontier model. |
+| **Policies first** (stable prefix) | Tab 1 candidate and both lanes of tab 2 Decision and Small-only | `system`: stable prefix. `user`: `"Customer: <message>\n\n(received <ISO time> · ticket <id>)"`. Use `prompt_cache_key = PROMPT_CACHE_KEY`. Tab 1 candidate adds an explicit breakpoint and 30-minute TTL when `PROMPT_CACHE_MODE=explicit`; Decision and Small-only omit explicit fields for older eligible models. |
 | **Policies first, no input cache** | Tab 3: baseline and candidate generation on supported GPT Standard | Same messages in both lanes, `prompt_cache_options = {mode: explicit}` without a key or breakpoint. Older models use the customer-first layout with no cache fields; report any implicit reads or writes. |
 | **Short question only** | Tab 2 classifier for both routed modes | Decision API `state` = the customer message only (no policies) |
 
@@ -394,7 +394,7 @@ Common to every tab: a title, a one-line subtitle, a mode switch, a count select
 ### 11.2 Tab 2 — Model routing
 
 - **Subtitle:** "Send routine work to a cheaper model; keep hard cases on the frontier."
-- **Both lanes** use the *policies first* layout, so prompt caching affects them equally; only the model choice differs.
+- **Both lanes** use the same full policies and grading. Guided Foundry uses identical customer-first prompts and disables input caching where supported so a warm prefix does not favor one model. Show actual reads and writes and withhold the isolated verdict if either occurs. The Decision and Small-only modes retain the stable policy-first layout.
 - **Control (all modes):** frontier model for every request.
 - **Mode A, Foundry Model Router:** classify the question before adding policies. A confident routine result restricts the configured router to GPT-4.1-mini; harder or uncertain questions keep the baseline's GPT-6.1 Sol in the quality pool. Pass the preview `routing_config` to the published router agent. Verify the returned mode and actual `response.model`, and include both the classifier and routing fees.
 - **Mode B, Decision router (pre-RAG):** candidate first sends only the customer message to Microsoft-Decision-1.1 with one `choice` question (Appendix C.3). If the choice is `small` with probability ≥ `DECISION_CONFIDENCE_MIN`, the small model answers; otherwise the frontier model answers. Both answer with the full policies prefix attached. Show `tier · 98% conf · 45 tok classified · $…`.

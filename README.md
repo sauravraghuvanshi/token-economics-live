@@ -12,7 +12,7 @@ The current English workload supersedes the original multilingual examples.
 | Experiment | Without the lever | With the lever |
 |---|---|---|
 | Prompt caching | The question changes the leading text. | Shared policies come first; compare cache writes and reads while every question still gets a fresh answer. |
-| Model routing | The frontier model answers every question. | Decision classifies just the question. Foundry Model Router uses GPT-4.1-mini for confident routine cases and keeps GPT-6.1 Sol for harder or uncertain cases. Inspect shows the model that answered, the reported routing mode and both fees. |
+| Model routing | The frontier model answers every question. | Decision classifies just the question. Foundry Model Router uses GPT-4.1-mini for confident routine cases and keeps GPT-6.1 Sol for harder or uncertain cases. Both guided lanes start with the same fresh input and check the cache meters. Inspect shows the model that answered, the reported routing mode and both fees. |
 | Response caching | Every question gets a fresh answer. | An exact fact match skips generation. Both lanes disable provider prompt caching on the supported deployment. If either lane reports input-cache reads or writes, the app shows the raw totals but does not publish an isolated savings verdict. |
 | Retry & kill switch | The agent retries failures even when evidence repeats, up to six attempts per invoice. | The default allows one initial attempt and three retries at most. A tighter token or spend rule can stop earlier. |
 
@@ -292,7 +292,7 @@ without disabling CI.
 5. Run all nine modes five times at both default and maximum sizes. Keep both
    JSON reports and verify the release ID. Confirm ten-request timings against
    the 90-second target, at least two actual model families in the guided mode,
-   both Decision tiers, zero input-cache activity in the response-cache runs,
+   both Decision tiers, zero input-cache activity in guided routing and response caching,
    lower response-cache spend, and the fault-labelled FX retry chain.
    Naive reuse, no retries and tight budgets should lose expected outcomes;
    never treat those intentional misses as a broken demo. Report Small-only

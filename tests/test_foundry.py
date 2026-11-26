@@ -147,6 +147,7 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
                         foundry_endpoint="https://example.services.ai.azure.com",
                         foundry_project_endpoint="https://example.services.ai.azure.com/api/projects/example")
     spec = catalog(settings)["support-lever-router"]
+    baseline = catalog(settings)["support-baseline"]
     prices = PriceBook.load(FIXTURES / "pricing.json")
     spend = SpendWindow(tmp_path / "spend.json", Decimal("2"))
     settings_by_question = {
@@ -158,9 +159,10 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
     selected = None
     invalid = None
     posted = []
+    baseline_input = None
 
     def respond(request):
-        nonlocal selected
+        nonlocal selected, baseline_input
         sent = json.loads(request.content)
         posted.append(request.url.path)
         if request.url.path.endswith("/systemone"):
@@ -170,14 +172,24 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
             return httpx.Response(200, json={"model": "microsoft-decision-1.1", "usage": {"input_tokens": 21},
                                              "answers": {"tier": {"choice": tier, "probabilities": {tier: certainty}}}})
         assert request.url.path.endswith("/openai/v1/responses")
-        assert request.headers["Foundry-Features"] == "ModelRouterControls=V1Preview"
-        assert sent["agent_reference"] == {"type": "agent_reference", "name": spec.name, "version": "2"}
         assert sent["store"] is False
-        assert selected is not None
-        _, _, mode, model = selected
-        assert sent["routing_config"] == {"mode": mode, "models": ranking_pool[mode],
-                                           "session_affinity": {"strategy": "none"}}
-        assert "Policy corpus" in sent["input"][0]["content"][0]["text"]
+        assert "prompt_cache_key" not in sent and "prompt_cache_breakpoint" not in json.dumps(sent["input"])
+        assert sent["input"][1]["content"][0]["text"].startswith("Received now")
+        assert sent["input"][1]["content"][0]["text"].endswith("Policy corpus")
+        if sent["agent_reference"]["name"] == baseline.name:
+            baseline_input = sent["input"]
+            mode, model = None, settings.frontier_deployment
+            assert "routing_config" not in sent
+        else:
+            assert request.headers["Foundry-Features"] == "ModelRouterControls=V1Preview"
+            assert sent["agent_reference"] == {"type": "agent_reference", "name": spec.name, "version": "2"}
+            assert selected is not None
+            _, _, mode, model = selected
+            assert sent["routing_config"] == {"mode": mode, "models": ranking_pool[mode],
+                                               "session_affinity": {"strategy": "none"}}
+            if mode == "cost":
+                assert sent["input"] == baseline_input
+        assert sent.get("prompt_cache_options") == (None if mode == "cost" else {"mode": "explicit"})
         selection = {} if invalid == "no-mode" else {"model_router_details": {"mode": mode}}
         return httpx.Response(200, json={
             "id": f"resp_{len(posted)}", "model": "gpt-6.1-sol" if invalid == "outside-pool" else model,
@@ -190,7 +202,10 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
         })
 
     async with mock_foundry(settings, respond) as live:
-        live.versions[spec.name] = "2"
+        live.versions.update({baseline.name: "2", spec.name: "2"})
+        control = CallSession(live, prices, CallContext("model_routing", "foundry_router", "control", "dynamic"),
+                              spend)
+        await route(control, settings, "Policy corpus", next(iter(settings_by_question)), "now", "ticket")
         for question, (_, _, mode, model) in settings_by_question.items():
             calls = CallSession(live, prices, CallContext("model_routing", "foundry_router", "candidate", "dynamic"),
                                 spend)
@@ -209,7 +224,7 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
                 Decimal(call["cost_usd"]) for call in calls.calls
             ]
             assert calls.cost is not None and calls.cost > 0
-    assert len(posted) == 10
+    assert len(posted) == 11
 
 
 @pytest.mark.parametrize("endpoint", [

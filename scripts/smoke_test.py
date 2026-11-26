@@ -146,9 +146,11 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
     if check_stories:
         control, candidate_summary = summary["control"], summary["candidate"]
         candidate = [r for r in rows if r["lane"] == "candidate"]
+        if (lever == "response_cache" or mode == "foundry_router") and any(
+            lane["tokens"][key] for lane in (control, candidate_summary) for key in ("cached", "cache_write")
+        ):
+            failures.append("Prompt-cache reads or writes contaminated the comparison.")
         if lever == "response_cache":
-            if any(lane["tokens"][key] for lane in (control, candidate_summary) for key in ("cached", "cache_write")):
-                failures.append("Prompt-cache reads or writes contaminated the answer-cache comparison.")
             if control["model_calls"] != count or control["cache_hits"] or candidate_summary["model_calls"] >= count:
                 failures.append("Only the candidate should skip generation on cache hits.")
             if summary["complete"] and Decimal(candidate_summary["cost_usd"]) >= Decimal(control["cost_usd"]):
@@ -161,7 +163,7 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
         if mode in {"default", "foundry_router", "decision_router", "fact_guarded"}:
             if candidate_summary["accepted"] != count:
                 failures.append("The recommended support path did not accept every request.")
-            if (source == "live" and count == 10 and summary["complete"]
+            if (source == "live" and (count == 10 or mode == "foundry_router") and summary["complete"]
                     and candidate_summary["cpa_usd"] is not None and control["cpa_usd"] is not None
                     and Decimal(candidate_summary["cpa_usd"]) >= Decimal(control["cpa_usd"])):
                 failures.append("The recommended support path did not lower cost per accepted request.")
@@ -286,7 +288,7 @@ def main():
                     result = validate_run(client, lever, mode, count, opts.source, opts.assert_stories, True,
                                           tab.get("agents", {}).get(mode), config["retry_attempts"]["control"])
                     result["round"] = i + 1
-                    if opts.verify_replays and result["summary"]["complete"]:
+                    if opts.verify_replays and not result["failures"]:
                         replay = client.post(f"/api/replays/{lever}/{mode}", params={"speed": 2})
                         replay.raise_for_status()
                         data = list(events(client, replay.json()["run_id"]))

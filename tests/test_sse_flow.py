@@ -229,18 +229,22 @@ def test_stop_blocks_future_baseline_retries_without_replacing_evidence(tmp_path
         assert api.post(stop, headers=headers).status_code == 409
 
 
-def test_response_cache_meter_activity_invalidates_comparison(tmp_path):
+@pytest.mark.parametrize(("lever", "mode", "request_id"), [
+    ("response_cache", "fact_guarded", "rc-01"),
+    ("model_routing", "foundry_router", "mr-01"),
+])
+def test_input_cache_meter_activity_invalidates_isolated_comparison(tmp_path, lever, mode, request_id):
     settings = Settings(foundry_mode="fake", data_dir=tmp_path)
 
     class LeakyProvider(FakeClient):
         async def invoke(self, kind, deployment, body, ctx):
             reply = await super().invoke(kind, deployment, body, ctx)
-            if (ctx.request_id, ctx.lane) == ("rc-01", "control"):
+            if (ctx.request_id, ctx.lane) == (request_id, "control"):
                 return replace(reply, usage={**reply.usage, "prompt_tokens_details": {"cached_tokens": 1024}})
             return reply
 
     with TestClient(create_app(settings, LeakyProvider(settings))) as api:
-        run_id = start(api, "response_cache", "fact_guarded", 5)
+        run_id = start(api, lever, mode, 5)
         completed = get_events(api, run_id)[-1][1]
         summary = completed["summary"]
         assert summary["control"]["tokens"]["cached"] == 1024

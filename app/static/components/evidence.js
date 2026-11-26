@@ -61,6 +61,7 @@ export function metrics(lever, data, count) {
 const plural = (n, label, many = `${label}s`) => `${n} ${n === 1 ? label : many}`;
 const select = (rows, predicate) => rows.filter(row => predicate(row.lever_detail || {}, row));
 const examples = rows => rows.length ? ` (${rows.map(row => row.request_id).join(", ")})` : "";
+const inputCache = (c, a) => ` Input-cache reads: ${pair(num(c.tokens.cached), num(a.tokens.cached))}; writes: ${pair(num(c.tokens.cache_write), num(a.tokens.cache_write))}.`;
 
 function measured(lever, mode, run) {
   const changed = run.results.filter(row => row.lane === "candidate");
@@ -85,7 +86,8 @@ function measured(lever, mode, run) {
       }
       const fees = select(changed, d => d.routing_fee_usd != null);
       const pools = select(changed, d => d.router_mode === "quality");
-      return `${starts}${plural(pools.length, "request")} used the quality pool; ${plural(fees.length, "request")} reported a routing fee.`;
+      return `${starts}${plural(pools.length, "request")} used the quality pool; ${plural(fees.length, "request")} reported a routing fee.`
+        + inputCache(c, a);
     }
     case "response_cache": {
       const hits = select(changed, d => d.cache_action === "hit");
@@ -94,7 +96,7 @@ function measured(lever, mode, run) {
       const embeddings = changed.reduce((n, row) => n + (row.calls || []).filter(call => call.kind === "embedding").length, 0);
       return `${plural(hits.length, "hit")} skipped answer generation; ${plural(wrong.length, "reused answer")} failed checks${examples(wrong)}. `
         + (mode === "naive" ? `${plural(embeddings, "embedding lookup")} recorded.` : `${plural(bypassed.length, "question")} bypassed the cache.`)
-        + ` Input-cache reads: ${pair(num(c.tokens.cached), num(a.tokens.cached))}; writes: ${pair(num(c.tokens.cache_write), num(a.tokens.cache_write))}.`;
+        + inputCache(c, a);
     }
     case "retry_killswitch": {
       const recovered = rows => select(rows, (d, row) => row.pass && d.attempts?.length > 1).length;
@@ -127,7 +129,7 @@ function take(run) {
       `${message} This batch does not produce a savings verdict.`, "warn"];
   }
   if (d.prompt_cache_activity) {
-    return ["Prompt-cache activity detected", "Both lanes' costs are shown, but they do not isolate response-cache savings.", "warn"];
+    return ["Prompt-cache activity detected", "Both lanes' costs are shown, but this run cannot isolate the selected lever.", "warn"];
   }
   const accepted = d.candidate.accepted - d.control.accepted;
   const change = d.cpa_change_pct == null ? null : Number(d.cpa_change_pct);

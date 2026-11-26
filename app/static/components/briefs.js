@@ -48,11 +48,11 @@ export const experiments = {
   },
   foundry_router: {
     change: "Classify the question, then use Foundry Model Router to send routine cases to GPT-4.1-mini and hard cases to the same frontier model as the baseline.",
-    watch: "Compare the actual model mix. Inspect each answer for the chosen pool, classifier cost and router fee.",
+    watch: "Both lanes use the same fresh input, so a warm prefix cannot skew the comparison. Inspect the selected model and both fees.",
     steps: [
-      "Keep the policy prompt and grading rules unchanged. Use a policy-first prompt supported by every eligible model.",
+      "Keep the full policies and grading rules. Put the unique ticket and question first to prevent provider cache reuse, and disable caching where supported.",
       "Use the classifier on question text alone. Confident routine cases get the low-cost pool; hard or uncertain cases keep the baseline model in the quality pool.",
-      "Send the eligible models to the same Foundry router. Check the mode and model in its response, and count both the classifier and routing fee.",
+      "Check the mode and model in each response and include both fees. If input-cache activity appears, show the cost but withhold the routing savings verdict.",
     ],
   },
   decision_router: {

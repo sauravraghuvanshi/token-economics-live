@@ -65,14 +65,16 @@ async def route(calls: CallSession, cfg: Settings, policies: str, text: str, tim
                 router_mode = "cost" if small else "quality"
             elif small:
                 deployment, detail["tier"] = cfg.small_deployment, "small"
-    # Use the same policy-first layout for both lanes, without explicit
-    # breakpoint fields that GPT-4.1-mini does not support.
+    # A shared warm prefix affects models differently. Give both guided lanes
+    # the same fresh input and explicitly disable caching where supported.
+    fresh_input = mode == "foundry_router"
     pool = ROUTER_POOLS[router_mode] if router_mode else ()
     controls = {"routing_config": {
         "mode": router_mode, "models": list(pool), "session_affinity": {"strategy": "none"},
     }} if router_mode else None
     reply = await answer(calls, cfg, policies, text, timestamp, ticket, deployment=deployment,
-                         kind=kind, explicit_supported=False, additional=controls)
+                         kind=kind, policies_first=not fresh_input, cache_prompt=not fresh_input,
+                         explicit_supported=fresh_input and router_mode != "cost", additional=controls)
     detail["answer_model"] = reply.model
     if router_mode:
         family = MODEL_VERSION_SUFFIX.sub("", reply.model.lower())

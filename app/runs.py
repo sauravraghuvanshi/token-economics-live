@@ -169,7 +169,7 @@ class Demo:
                                    "fatal": False})
 
     def measure(self, run: Run) -> dict[str, Any]:
-        return kpis(run.results, lever=run.lever, baseline_stop_requested=run.baseline_stop_requested)
+        return kpis(run.results, lever=run.lever, mode=run.mode, baseline_stop_requested=run.baseline_stop_requested)
 
     def session(self, ctx: CallContext) -> CallSession:
         if self.client is None:

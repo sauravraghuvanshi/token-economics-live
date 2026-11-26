@@ -65,6 +65,7 @@ def verify_fake_mode(page: Page, title: str, mode: str, count: int, code: str | 
         expect(candidate("mr-01").get_by_text("Low-cost pool", exact=False)).to_be_visible()
         expect(candidate("mr-03").get_by_text("Quality pool", exact=False)).to_be_visible()
         expect(page.locator("#kpis").get_by_text("2 models", exact=True)).to_be_visible()
+        expect(page.locator("#readout")).to_contain_text("Input-cache reads: 0 → 0; writes: 0 → 0.")
     elif mode == "decision_router":
         expect(candidate("mr-01").get_by_text("small recommendation", exact=False)).to_be_visible()
         expect(candidate("mr-03").get_by_text("frontier recommendation", exact=False)).to_be_visible()

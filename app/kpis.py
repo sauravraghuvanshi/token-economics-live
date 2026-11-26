@@ -46,12 +46,13 @@ def lane_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def kpis(results: list[dict[str, Any]], *, lever: str, baseline_stop_requested: bool) -> dict[str, Any]:
+def kpis(results: list[dict[str, Any]], *, lever: str, mode: str, baseline_stop_requested: bool) -> dict[str, Any]:
     control, candidate = [lane_kpis([r for r in results if r["lane"] == lane])
                           for lane in ("control", "candidate")]
     complete = control["complete"] and candidate["complete"]
     baseline_stopped = any(row["lever_detail"].get("manual_stop") for row in results)
-    prompt_cache_activity = lever == "response_cache" and any(
+    isolate_input_cache = lever == "response_cache" or (lever, mode) == ("model_routing", "foundry_router")
+    prompt_cache_activity = isolate_input_cache and any(
         lane["tokens"][key] for lane in (control, candidate) for key in ("cached", "cache_write")
     )
     savings, change, quality = None, None, None
