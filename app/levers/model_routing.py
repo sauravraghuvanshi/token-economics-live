@@ -65,8 +65,8 @@ async def route(calls: CallSession, cfg: Settings, policies: str, text: str, tim
                 router_mode = "cost" if small else "quality"
             elif small:
                 deployment, detail["tier"] = cfg.small_deployment, "small"
-    # A shared warm prefix affects models differently. Give both guided lanes
-    # the same fresh input and explicitly disable caching where supported.
+    # Break the shared prefix in both guided lanes. The router does not accept
+    # explicit cache controls, even when its pool contains only the frontier model.
     fresh_input = mode == "foundry_router"
     pool = ROUTER_POOLS[router_mode] if router_mode else ()
     controls = {"routing_config": {
@@ -74,7 +74,7 @@ async def route(calls: CallSession, cfg: Settings, policies: str, text: str, tim
     }} if router_mode else None
     reply = await answer(calls, cfg, policies, text, timestamp, ticket, deployment=deployment,
                          kind=kind, policies_first=not fresh_input, cache_prompt=not fresh_input,
-                         explicit_supported=fresh_input and router_mode != "cost", additional=controls)
+                         explicit_supported=False, additional=controls)
     detail["answer_model"] = reply.model
     if router_mode:
         family = MODEL_VERSION_SUFFIX.sub("", reply.model.lower())

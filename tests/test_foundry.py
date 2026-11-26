@@ -173,7 +173,8 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
                                              "answers": {"tier": {"choice": tier, "probabilities": {tier: certainty}}}})
         assert request.url.path.endswith("/openai/v1/responses")
         assert sent["store"] is False
-        assert "prompt_cache_key" not in sent and "prompt_cache_breakpoint" not in json.dumps(sent["input"])
+        assert not {"prompt_cache_key", "prompt_cache_options"} & sent.keys()
+        assert "prompt_cache_breakpoint" not in json.dumps(sent["input"])
         assert sent["input"][1]["content"][0]["text"].startswith("Received now")
         assert sent["input"][1]["content"][0]["text"].endswith("Policy corpus")
         if sent["agent_reference"]["name"] == baseline.name:
@@ -187,9 +188,8 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
             _, _, mode, model = selected
             assert sent["routing_config"] == {"mode": mode, "models": ranking_pool[mode],
                                                "session_affinity": {"strategy": "none"}}
-            if mode == "cost":
+            if invalid is None:
                 assert sent["input"] == baseline_input
-        assert sent.get("prompt_cache_options") == (None if mode == "cost" else {"mode": "explicit"})
         selection = {} if invalid == "no-mode" else {"model_router_details": {"mode": mode}}
         return httpx.Response(200, json={
             "id": f"resp_{len(posted)}", "model": "gpt-6.1-sol" if invalid == "outside-pool" else model,
@@ -203,10 +203,10 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
 
     async with mock_foundry(settings, respond) as live:
         live.versions.update({baseline.name: "2", spec.name: "2"})
-        control = CallSession(live, prices, CallContext("model_routing", "foundry_router", "control", "dynamic"),
-                              spend)
-        await route(control, settings, "Policy corpus", next(iter(settings_by_question)), "now", "ticket")
         for question, (_, _, mode, model) in settings_by_question.items():
+            control = CallSession(live, prices, CallContext("model_routing", "foundry_router", "control", "dynamic"),
+                                  spend)
+            await route(control, settings, "Policy corpus", question, "now", "ticket")
             calls = CallSession(live, prices, CallContext("model_routing", "foundry_router", "candidate", "dynamic"),
                                 spend)
             reply, detail = await route(calls, settings, "Policy corpus", question, "now", "ticket")
@@ -224,7 +224,7 @@ async def test_foundry_router_sends_preview_controls_and_verifies_paid_selection
                 Decimal(call["cost_usd"]) for call in calls.calls
             ]
             assert calls.cost is not None and calls.cost > 0
-    assert len(posted) == 11
+    assert len(posted) == 13
 
 
 @pytest.mark.parametrize("endpoint", [

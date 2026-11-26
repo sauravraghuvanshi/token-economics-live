@@ -48,9 +48,9 @@ export const experiments = {
   },
   foundry_router: {
     change: "Classify the question, then use Foundry Model Router to send routine cases to GPT-4.1-mini and hard cases to the same frontier model as the baseline.",
-    watch: "Both lanes use the same fresh input, so a warm prefix cannot skew the comparison. Inspect the selected model and both fees.",
+    watch: "Both lanes put the question first to break the shared cacheable prefix. Check the cache meters, selected model and both fees.",
     steps: [
-      "Keep the full policies and grading rules. Put the unique ticket and question first to prevent provider cache reuse, and disable caching where supported.",
+      "Keep the full policies and grading rules. Put the unique ticket and question before the shared policies, leaving provider cache options unset.",
       "Use the classifier on question text alone. Confident routine cases get the low-cost pool; hard or uncertain cases keep the baseline model in the quality pool.",
       "Check the mode and model in each response and include both fees. If input-cache activity appears, show the cost but withhold the routing savings verdict.",
     ],
