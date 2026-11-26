@@ -171,13 +171,20 @@ function brief() {
     ["03", "What to look for", experiment.watch, null],
   ]) {
     const section = el("div", null, `brief-part${lane === "candidate" ? " lever-part" : ""}`);
-    const h = el("h3");
+    const h = el("h2");
     const n = el("i", index);
     n.setAttribute("aria-hidden", "true");
     h.append(n, title);
     if (lane === "candidate" && experiment.counterexample) h.append(el("span", "Counterexample", "tag"));
     const names = lane && agentLine("Configured Foundry agent", agents?.[lane]);
-    section.append(h, el("p", state.lever === "response_cache" && names ? copy.replace("answer model", "answer agent") : copy));
+    let text = state.lever === "response_cache" && names ? copy.replace("answer model", "answer agent") : copy;
+    if (lane === "control" && state.lever === "retry_killswitch") {
+      text += ` Baseline ceiling: ${state.config.retry_attempts.control} attempts per invoice.`;
+    }
+    if (lane === "control" && state.lever === "response_cache" && state.config.prompt_cache_mode === "auto") {
+      text = "Generate every answer from scratch. This deployment can still cache input tokens; check the reported usage.";
+    }
+    section.append(h, el("p", text));
     if (names) section.append(names);
     grid.append(section);
   }
@@ -282,9 +289,61 @@ function renderRun() {
   meter.hidden = !run.results;
   meter.max = 2 * count;
   meter.value = run.results?.length || 0;
+  retryMonitor(run);
   cachePanel(run);
   buttons();
   statusUI();
+}
+
+function retryMonitor(run) {
+  const liveRun = state.active === run && run.source !== "replay";
+  const finishedBaseline = run.results?.some(row => row.lane === "control" && row.idx === run.runCount);
+  $("retry-monitor").hidden = state.lever !== "retry_killswitch" || !run.results
+    || (run.done && !run.baseline_stop_requested);
+  if ($("retry-monitor").hidden) return;
+  const stop = $("stop-baseline");
+  stop.hidden = !liveRun;
+  stop.setAttribute("aria-disabled", String(Boolean(run.stopping || run.baseline_stop_requested || finishedBaseline)));
+  const label = run.baseline_stop_requested ? "Stop requested" : run.stopping ? "Sending stop…"
+    : finishedBaseline ? "Baseline finished" : "Stop baseline retries";
+  if (stop.textContent !== label) stop.textContent = label;
+  const note = run.baseline_stop_requested && run.done
+    ? "This run did not replace the Scoreboard or the last recording."
+    : run.baseline_stop_requested
+      ? "The current attempt can finish. Later baseline invoices get one try, and the lever lane keeps running."
+      : run.source === "replay" ? "Playing recorded attempts."
+        : finishedBaseline ? "The baseline has finished. The lever lane is still running."
+          : "Stop new retries in the baseline without interrupting the lever lane.";
+  if ($("stop-note").textContent !== note) $("stop-note").textContent = note;
+  for (const lane of Object.keys(laneLabels)) {
+    const node = $(`retry-${lane}`), attempt = run.lastAttempts?.[lane];
+    let text = "Waiting for the first invoice.";
+    if (attempt) {
+      const { request_id, number, limit, errors, repeated } = attempt;
+      const label = number === 1 ? "Initial attempt" : `Retry ${number - 1} of ${limit - 1}`;
+      const outcome = attempt.stop || (errors == null ? "running"
+        : errors.length ? repeated ? "same error" : "checks failed" : "checks passed");
+      node.className = errors?.length ? "warn" : errors ? "pass" : "";
+      text = `${request_id.toUpperCase()} · ${label} · ${outcome}`;
+    } else node.className = "muted";
+    if (node.textContent !== text) node.textContent = text;
+  }
+}
+
+async function stopBaseline() {
+  const run = current();
+  if (state.lever !== "retry_killswitch" || state.active !== run || run.source === "replay"
+      || $("stop-baseline").getAttribute("aria-disabled") === "true") return;
+  run.stopping = true;
+  retryMonitor(run);
+  try {
+    const result = await post(`/api/runs/${encodeURIComponent(run.id)}/stop-baseline`, {}, true);
+    if (result) run.baseline_stop_requested = result.baseline_stop_requested;
+  } catch (error) { toast(error.message); }
+  finally {
+    run.stopping = false;
+    if (run === current()) retryMonitor(run);
+  }
 }
 
 const setOptions = (select, values, active) => {
@@ -368,6 +427,7 @@ function connect(id, key, run, lever, mode) {
     state.active = null;
     run.done = true;
     buttons();
+    if (isShown() && document.activeElement === $("stop-baseline")) $("run").focus({ preventScroll: true });
     if (state.lever === "scoreboard") refreshBoard();
     if (run.source !== "replay") checkStatus();
     update();
@@ -378,15 +438,27 @@ function connect(id, key, run, lever, mode) {
     request.lanes.add(data.lane);
     run.requests.set(data.request_id, request);
   });
+  const trackAttempt = data => {
+    run.attempts.set(`${data.request_id}/${data.lane}`, data);
+    run.lastAttempts[data.lane] = data;
+  };
+  on("attempt_started", trackAttempt);
+  on("attempt_checked", trackAttempt);
+  on("baseline_stop_requested", () => { run.baseline_stop_requested = true; });
   on("lane_result", data => {
     const i = run.results.findIndex(row => row.request_id === data.request_id && row.lane === data.lane);
     if (i < 0) run.results.push(data);
     else run.results[i] = data;
     if (data.lever_detail?.entries) run.entries = data.lever_detail.entries;
+    const last = run.lastAttempts[data.lane];
+    if (last?.request_id === data.request_id) {
+      run.lastAttempts[data.lane] = { ...last, stop: data.lever_detail?.stop || "finished" };
+    }
   });
   on("kpis", data => { run.kpis = data; });
   on("run_completed", data => {
     run.kpis = data.summary;
+    run.baseline_stop_requested = data.summary.baseline_stop_requested;
     const saved = state.config.tabs[lever].recordings;
     if (data.saved_replay && !saved.includes(mode)) saved.push(mode);
     finish();
@@ -410,6 +482,7 @@ function connect(id, key, run, lever, mode) {
       run.runCount = snapshot.count;
       run.recorded_at = snapshot.recorded_at;
       run.recording_source = snapshot.recording_source;
+      run.baseline_stop_requested = snapshot.baseline_stop_requested;
       run.entries = [...run.results].reverse().find(row => row.lever_detail?.entries)?.lever_detail.entries;
       if (!run.kpis) run.error = "The run ended before a summary could be saved.";
       finish();
@@ -432,7 +505,8 @@ async function start(replay = false) {
     const result = await (replay ? post(`/api/replays/${lever}/${mode}`, {})
       : post("/api/runs", { lever, mode, count }, true));
     if (!result) return;
-    const run = { source: replay ? "replay" : state.config.mode, results: [], requests: new Map(), runCount: count, done: false };
+    const run = { id: result.run_id, source: replay ? "replay" : state.config.mode, results: [],
+      requests: new Map(), attempts: new Map(), lastAttempts: {}, runCount: count, done: false };
     state.active = run;
     state.runs[key] = run;
     if (lever === "response_cache" && !replay) delete state.cache[mode];
@@ -488,7 +562,7 @@ async function howto() {
       " with an ", el("code", "agent_reference"), " that names the published agent version. Azure reports cache reads and writes in ",
       el("code", "input_tokens_details"), " when available. Inspect a receipt for the raw usage and confirmed response ID.");
     body.append(livePath, details("Advanced · call a published Foundry agent", responsesExample),
-      el("p", "The side-by-side recipes below illustrate the lever with direct model calls.", "muted"), grid);
+      el("p", "The recipes below show the underlying request or app logic.", "muted"), grid);
     if (snippet.shared) body.append(details("Advanced · shared connection code for the recipes", snippet.shared));
     const modal = $("howto");
     modal.scrollTop = 0;
@@ -532,6 +606,7 @@ $("count").onchange = e => {
 };
 $("run-form").onsubmit = e => { e.preventDefault(); start(); };
 $("replay").onclick = () => start(true);
+$("stop-baseline").onclick = stopBaseline;
 document.addEventListener("keydown", event => {
   if (event.ctrlKey || event.altKey || event.metaKey || event.repeat || document.querySelector("dialog[open]")
       || ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName) || event.target.isContentEditable) return;

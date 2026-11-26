@@ -18,6 +18,7 @@ from app.settings import Settings
 MODEL_KINDS = {"chat", "router", "embedding", "decision"}
 INVOICES = {row.id: row.expected for row in load_dataset().invoices}
 DEVANAGARI = re.compile(r"[\u0900-\u097f]")
+ATTEMPT_EVENTS = {"attempt_started", "attempt_checked"}
 
 
 def events(client, run_id):
@@ -33,7 +34,7 @@ def events(client, run_id):
                 yield name, json.loads(line[6:])
 
 
-def validate_run(client, lever, mode, count, source, check_stories, safety_checks, agents=None):
+def validate_run(client, lever, mode, count, source, check_stories, safety_checks, agents=None, safety_ceiling=6):
     begin = time.monotonic()
     start = client.post("/api/runs", json={"lever": lever, "mode": mode, "count": count})
     start.raise_for_status()
@@ -51,11 +52,16 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
     if DEVANAGARI.search(json.dumps(stream, ensure_ascii=False)):
         failures.append("The English demo stream contained Devanagari text.")
     expected_events = ["request_started", "request_started", "lane_result", "lane_result", "kpis"] * count
-    if [name for name, _ in stream[1:-1] if name != "run_error"] != expected_events:
+    if [name for name, _ in stream[1:-1] if name not in ATTEMPT_EVENTS | {"run_error"}] != expected_events:
         failures.append("The stream lost or reordered request, lane, or KPI events.")
     failures.extend(body["message"] for name, body in stream if name == "run_error")
     response_ids = set()
-    for row in rows:
+    attempts: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    for event, row in stream:
+        if event in ATTEMPT_EVENTS:
+            attempts.setdefault((row["request_id"], row["lane"]), []).append((event, row["number"]))
+        if event != "lane_result":
+            continue
         if row["status"] != "ok":
             failures.append(f"{row['request_id']} {row['lane']}: {'; '.join(row['miss_reasons'])}")
         elif any(not call.get("raw_usage") for call in row["calls"]
@@ -78,6 +84,12 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
                         or not response_id or response_id in response_ids):
                     failures.append(f"{row['request_id']} {row['lane']}: unverified Foundry agent execution.")
                 response_ids.add(response_id)
+        if lever == "retry_killswitch":
+            chain = row["lever_detail"].get("attempts", [])
+            expected_progress = [(name, step["number"]) for step in chain
+                                 for name in ("attempt_started", "attempt_checked")]
+            if not chain or attempts.pop((row["request_id"], row["lane"]), []) != expected_progress:
+                failures.append(f"{row['request_id']} {row['lane']}: missing or out-of-order attempt progress.")
         if lever == "retry_killswitch" and row["pass"]:
             expected = INVOICES[row["request_id"]]
             output = row["lever_detail"].get("output") or {}
@@ -100,8 +112,8 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
             if summary["complete"] and all(r["totals"]["cost_usd"] is not None for r in results):
                 if Decimal(final["cost_usd"]) != sum(Decimal(r["totals"]["cost_usd"]) for r in results):
                     failures.append(f"{lane} total does not match rows.")
-    if not summary["complete"]:
-        failures.append("The run has incomplete totals.")
+    if not summary["complete"] or summary.get("baseline_stop_requested") or attempts:
+        failures.append("The run has incomplete totals, an unexpected stop, or late attempt events.")
     signal = {
         f"{r['request_id']}/{r['lane']}": {
             "accepted": r["pass"], "buckets": r["totals"]["tokens"], "model": [
@@ -113,7 +125,11 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
             "cache_action": r["lever_detail"].get("cache_action"), "wrong_hit": r["lever_detail"].get("wrong_hit"),
             "tier": r["lever_detail"].get("tier"), "similarity": r["lever_detail"].get("similarity"),
             "routing_fee_usd": r["lever_detail"].get("routing_fee_usd"),
+            "router_mode": r["lever_detail"].get("router_mode"),
+            "answer_model": r["lever_detail"].get("answer_model"),
+            "classification_cost_usd": r["lever_detail"].get("classification_cost_usd"),
             "stop": r["lever_detail"].get("stop"), "attempts": len(r["lever_detail"].get("attempts", [])),
+            "repeated_attempts": sum(a["repeated"] for a in r["lever_detail"].get("attempts", [])),
             "arithmetic_reconciliations": [a["arithmetic_reconciliation"]
                                            for a in r["lever_detail"].get("attempts", [])
                                            if "arithmetic_reconciliation" in a],
@@ -130,6 +146,16 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
     if check_stories:
         control, candidate_summary = summary["control"], summary["candidate"]
         candidate = [r for r in rows if r["lane"] == "candidate"]
+        if lever == "response_cache":
+            if any(lane["tokens"][key] for lane in (control, candidate_summary) for key in ("cached", "cache_write")):
+                failures.append("Prompt-cache reads or writes contaminated the answer-cache comparison.")
+            if control["model_calls"] != count or control["cache_hits"] or candidate_summary["model_calls"] >= count:
+                failures.append("Only the candidate should skip generation on cache hits.")
+            if summary["complete"] and Decimal(candidate_summary["cost_usd"]) >= Decimal(control["cost_usd"]):
+                failures.append("The answer cache did not lower measured total inference cost.")
+            if any(r["lever_detail"].get("cache_action") == "hit"
+                   and any(c["kind"] in {"chat", "router"} for c in r["calls"]) for r in candidate):
+                failures.append("A saved answer still triggered generation.")
         if lever != "retry_killswitch" and control["accepted"] != count:
             failures.append("The support baseline did not accept every request.")
         if mode in {"default", "foundry_router", "decision_router", "fact_guarded"}:
@@ -143,10 +169,17 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
             if summary["candidate"]["tokens"]["cached"] <= summary["control"]["tokens"]["cached"]:
                 failures.append("Candidate did not read more cached tokens than the control.")
         elif mode == "foundry_router":
-            if any(not r["lever_detail"].get("routing_fee_usd") or len(r["calls"]) != 1
-                   or r["calls"][0]["kind"] != "router" or not r["calls"][0]["response_model"]
-                   for r in candidate):
-                failures.append("Foundry routing did not show a billed router call and the model that answered.")
+            for r in candidate:
+                detail, calls = r["lever_detail"], r["calls"]
+                if ([c["kind"] for c in calls] != ["decision", "router"]
+                        or not detail.get("routing_fee_usd") or not detail.get("classification_cost_usd")
+                        or calls[1].get("routing_mode") != detail.get("router_mode")
+                        or not calls[1].get("response_model") or calls[1]["response_model"] != detail.get("answer_model")):
+                    failures.append(f"{r['request_id']}: expected a billed classifier and confirmed routed answer.")
+            models = {re.sub(r"-\d{4}-\d{2}-\d{2}$", "", c["response_model"].lower())
+                      for r in candidate for c in r["calls"] if c["kind"] == "router" and c.get("response_model")}
+            if len(models) < 2 or {r["lever_detail"].get("router_mode") for r in candidate} != {"cost", "quality"}:
+                failures.append("The answer workload did not use both routing pools and at least two model families.")
         elif mode == "decision_router":
             for key in ("mr-03/candidate", "mr-05/candidate", "mr-07/candidate", "mr-09/candidate"):
                 see(key, lambda r: r["tier"] == "frontier", f"Decision router did not escalate {key}.")
@@ -167,22 +200,17 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
         elif mode == "naive":
             for key in ("rc-03/candidate", "rc-06/candidate"):
                 see(key, lambda r: r["wrong_hit"], f"Expected a wrong similarity hit: {key}")
-            if count == 10 and candidate_summary["accepted"] != 8:
-                failures.append("Naive similarity should miss exactly the two changed-fact samples.")
+            if candidate_summary["accepted"] != count - (1 if count < 6 else 2):
+                failures.append("Naive similarity should miss only the changed-fact samples in this batch.")
         elif lever == "retry_killswitch":
-            stops = {"guardrails": {"no new evidence", "retry limit"}, "no_retries": {"no retries"},
-                     "tight": {"kill switch"}}[mode]
+            stop, attempts_at_stop = {"guardrails": ("retry limit", 4), "no_retries": ("no retries", 1),
+                                      "tight": ("kill switch", 1)}[mode]
             for request_id in ("inv-03", "inv-06"):
-                see(f"{request_id}/control", lambda r: r["stop"] == "safety ceiling" and r["attempts"] == 6,
+                see(f"{request_id}/control", lambda r: r["stop"] == "safety ceiling" and r["attempts"] == safety_ceiling,
                     f"{request_id} control did not reach the safety ceiling.")
-                see(f"{request_id}/candidate", lambda r: r["stop"] in stops and not r["accepted"]
-                    and (r["attempts"] in (2, 3) if mode == "guardrails" else r["attempts"] == 1),
-                    f"{request_id} candidate did not hand off within the configured {mode} bound.")
-            if mode == "guardrails" and not any(
-                signal.get(f"{request_id}/candidate", {}).get("stop") == "no new evidence"
-                for request_id in ("inv-03", "inv-06")
-            ):
-                failures.append("No runaway invoice demonstrated a repeated evidence handoff.")
+                see(f"{request_id}/candidate", lambda r: r["stop"] == stop and not r["accepted"]
+                    and r["attempts"] == attempts_at_stop,
+                    f"{request_id} candidate did not hand off after {attempts_at_stop} attempt(s) with {mode}.")
             for request_id in ("inv-01", "inv-04"):
                 for lane in ("control", "candidate"):
                     see(f"{request_id}/{lane}", lambda r: r["accepted"] and r["attempts"] == 1,
@@ -196,7 +224,7 @@ def validate_run(client, lever, mode, count, source, check_stories, safety_check
     elapsed = time.monotonic() - begin
     if safety_checks and count == 10 and source == "live" and elapsed >= 90:
         failures.append("Ten-request run exceeded the 90-second dry-run target.")
-    return {"workload_version": stream[0][1].get("workload_version"),
+    return {"workload_version": stream[0][1].get("workload_version"), "source": source,
             "lever": lever, "mode": mode, "run_id": run_id, "count": count, "summary": summary,
             "elapsed_seconds": round(elapsed, 2), "signals": signal, "failures": failures}
 
@@ -256,7 +284,7 @@ def main():
                         continue
                     count = tab["max" if opts.max_counts else "default"]
                     result = validate_run(client, lever, mode, count, opts.source, opts.assert_stories, True,
-                                          tab.get("agents", {}).get(mode))
+                                          tab.get("agents", {}).get(mode), config["retry_attempts"]["control"])
                     result["round"] = i + 1
                     if opts.verify_replays and result["summary"]["complete"]:
                         replay = client.post(f"/api/replays/{lever}/{mode}", params={"speed": 2})

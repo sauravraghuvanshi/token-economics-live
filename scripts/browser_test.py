@@ -26,12 +26,14 @@ def verify_layout(page: Page) -> None:
 
 
 def verify_howto(page: Page, badge: str) -> None:
-    page.get_by_role("button", name="How to implement").click()
+    opener = page.get_by_role("button", name="How to implement")
+    opener.click()
     howto = page.get_by_role("dialog", name="How to implement")
     expect(howto.locator(".diff pre")).to_have_count(2)
     expect(howto.get_by_text(badge, exact=True)).to_be_visible()
     page.keyboard.press("Escape")
     expect(howto).not_to_be_visible()
+    expect(opener).to_be_focused()
 
 
 def start_run(page: Page, count: int, code: str | None, timeout: int = 5_000) -> None:
@@ -60,12 +62,16 @@ def verify_fake_mode(page: Page, title: str, mode: str, count: int, code: str | 
         expect(candidate("pc-02").get_by_text(re.compile(r"\d cached"))).to_be_visible()
     elif mode == "foundry_router":
         expect(candidate("mr-01").get_by_text("Routing fee", exact=False)).to_be_visible()
+        expect(candidate("mr-01").get_by_text("Low-cost pool", exact=False)).to_be_visible()
+        expect(candidate("mr-03").get_by_text("Quality pool", exact=False)).to_be_visible()
+        expect(page.locator("#kpis").get_by_text("2 models", exact=True)).to_be_visible()
     elif mode == "decision_router":
-        expect(candidate("mr-01").get_by_text("small ·", exact=False)).to_be_visible()
-        expect(candidate("mr-03").get_by_text("frontier ·", exact=False)).to_be_visible()
+        expect(candidate("mr-01").get_by_text("small recommendation", exact=False)).to_be_visible()
+        expect(candidate("mr-03").get_by_text("frontier recommendation", exact=False)).to_be_visible()
     elif mode == "small_all":
         expect(candidate("mr-03").get_by_text("✕ Miss", exact=True)).to_be_visible()
     elif mode == "fact_guarded":
+        expect(page.locator("#readout")).to_contain_text("Input-cache reads: 0 → 0; writes: 0 → 0.")
         for request_id in ("rc-02", "rc-05", "rc-08", "rc-09"):
             expect(candidate(request_id).get_by_text("model skipped", exact=False)).to_be_visible()
         expect(candidate("rc-06").get_by_text("Model used → stored", exact=False)).to_be_visible()
@@ -79,8 +85,10 @@ def verify_fake_mode(page: Page, title: str, mode: str, count: int, code: str | 
         for request_id in ("rc-03", "rc-06"):
             expect(candidate(request_id).get_by_text("Wrong answer from cache", exact=False)).to_be_visible()
     else:
-        expected = {"guardrails": "no new evidence", "no_retries": "no retries", "tight": "kill switch"}[mode]
+        expected = {"guardrails": "retry limit", "no_retries": "no retries", "tight": "kill switch"}[mode]
         expect(candidate("inv-03").get_by_text(re.compile(fr"→ {expected} → Handoff"))).to_be_visible()
+        if mode == "guardrails":
+            expect(candidate("inv-03").get_by_text(re.compile(r"Attempt 4 .*retry limit"))).to_be_visible()
         expect(candidate("inv-03").get_by_text("FX tool simulated", exact=False)).to_be_visible()
         expect(page.locator(".lane").filter(
             has=page.get_by_role("button", name="Inspect inv-03 control", exact=True)
@@ -91,7 +99,8 @@ def verify_fake_mode(page: Page, title: str, mode: str, count: int, code: str | 
 
 
 def verify_inspect(page: Page, lane: str, agent: str | None = None) -> None:
-    page.get_by_role("button", name=f"Inspect pc-02 {lane}", exact=True).click()
+    opener = page.get_by_role("button", name=f"Inspect pc-02 {lane}", exact=True)
+    opener.click()
     drawer = page.get_by_role("dialog", name=f"pc-02 · {lane}")
     expect(drawer.get_by_text("Raw usage", exact=True)).to_be_visible()
     if agent:
@@ -102,6 +111,7 @@ def verify_inspect(page: Page, lane: str, agent: str | None = None) -> None:
         expect(drawer.get_by_text(re.compile(r"cached read.+/ 1,000,000", re.I))).to_be_visible()
     verify_layout(page)
     page.keyboard.press("Escape")
+    expect(opener).to_be_focused()
 
 
 def verify_scoreboard(page: Page, count: int, badge: str) -> None:

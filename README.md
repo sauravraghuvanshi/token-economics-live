@@ -7,6 +7,27 @@ grades. Keep a change only if cost per accepted outcome falls and quality holds.
 See [Instruction.md](Instruction.md) for the original design and pricing rules.
 The current English workload supersedes the original multilingual examples.
 
+## What to look for
+
+| Experiment | Without the lever | With the lever |
+|---|---|---|
+| Prompt caching | The question changes the leading text. | Shared policies come first; compare cache writes and reads while every question still gets a fresh answer. |
+| Model routing | The frontier model answers every question. | Decision classifies just the question. Foundry Model Router uses GPT-4.1-mini for confident routine cases and selects GPT-4.1 or GPT-6.1 Sol for harder or uncertain cases. Inspect shows the model that answered, the reported routing mode and both fees. |
+| Response caching | Every question gets a fresh answer. | An exact fact match skips generation. Both lanes disable provider prompt caching on the supported deployment. If either lane reports input-cache reads or writes, the app shows the raw totals but does not publish an isolated savings verdict. |
+| Retry & kill switch | The agent retries failures even when evidence repeats, up to six attempts per invoice. | The default allows one initial attempt and three retries at most. A tighter token or spend rule can stop earlier. |
+
+Use **Stop baseline retries** during an invoice run to stop new baseline
+retries. An attempt already running can finish and is counted; later baseline
+invoices get one initial attempt. The lever lane finishes normally. A stop
+request does not replace the Scoreboard or the last recording.
+
+The guided routing mode uses [Foundry per-request routing controls](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/model-router-routing-controls).
+Those controls are **preview** and have no production SLA. The demo requires
+Foundry to confirm the requested mode and return an eligible model; it does not
+silently reroute a failed request. In response caching, `PROMPT_CACHE_MODE=auto`
+is a compatibility setting for older models that cannot disable implicit
+prompt caching. It does not guarantee zero input-cache activity.
+
 ## Run locally
 
 Use Python 3.12. Fake mode runs all nine scenarios without Azure or CDN assets.
@@ -32,7 +53,8 @@ $env:FOUNDRY_MODE = 'fake'
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy app
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m scripts.smoke_test --base-url http://127.0.0.1:8000 --source fake --rounds 2 --max-counts --assert-stories --verify-replays
+.\.venv\Scripts\python.exe -m scripts.smoke_test --base-url http://127.0.0.1:8000 --source fake --rounds 5 --assert-stories --verify-replays
+.\.venv\Scripts\python.exe -m scripts.smoke_test --base-url http://127.0.0.1:8000 --source fake --rounds 5 --max-counts --assert-stories --verify-replays
 ```
 
 For browser verification, install `playwright==1.58.0` in the same environment
@@ -77,9 +99,10 @@ azd env set MONITORING_PUBLISHER_ROLE_ID (az role definition list --subscription
 
 Look up `Azure AI User` if the renamed `Foundry User` is not present. Set
 `COGNITIVE_SERVICES_USER_ROLE_ID` by the same lookup if the Decision endpoint
-requires it. Set the router to **Balanced** with a subset covered by the pricing
-file. If a separate operator is responsible for Foundry, have them apply those
-settings and allow time for them to take effect.
+requires it. Set the router to **Balanced** with GPT-4.1-mini, GPT-4.1, and GPT-6.1 Sol,
+covered by the pricing file. The guided mode can narrow that set, not add models.
+If a separate operator is responsible for Foundry, have them apply those settings
+and allow time for them to take effect.
 
 In PowerShell 7, enter the operator-approved random demo code (16+ characters)
 at a masked prompt. The secure Bicep parameter seeds the Key Vault secret, and
@@ -162,11 +185,63 @@ use managed identity and can take time after a fresh deployment or a role
 change. Unauthenticated status reads do not trigger inference. A code-authenticated
 status refresh is limited to once per minute.
 
-After provisioning, connect the designated GitHub repository with
-`azd pipeline config`. The workflow runs offline tests and uses federated
-authentication for deploys from `main`. CI never runs the live smoke test.
-A GitHub remote has not been designated, so the workflow is not connected
-and no pull request has been opened.
+### GitHub Actions releases
+
+[The workflow](.github/workflows/ci-deploy.yml) runs offline on pushes and pull
+requests. It checks Python and browser scripts, then packages the tested revision
+without local state or stale recordings. Only the current `main` revision in the
+[private repository](https://github.com/sauravraghuvanshi/token-economics-live)
+can deploy. The publish job is disabled until `AZURE_DEPLOY_ENABLED` is `true`.
+
+For the one-time setup, use PowerShell 7.4+ in this checkout, signed into the
+site's subscription with permission to deploy a managed identity and assign an
+Azure role on the App Service. GitHub CLI must be signed into the repository
+owner's account. Preview the changes first:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+$repo = 'sauravraghuvanshi/token-economics-live'
+$group = 'rg-tokecon-demo'
+$app = 'app-tokecon-q7yxpkuusfxba'
+$oidc = gh api "repos/$repo/actions/oidc/customization/sub" | ConvertFrom-Json
+if (!$oidc.use_default -or !$oidc.use_immutable_subject -or !$oidc.sub_claim_prefix) {
+    throw 'Expected the default immutable GitHub OIDC subject.'
+}
+$subject = "$($oidc.sub_claim_prefix):ref:refs/heads/main"
+$identityArgs = @('--resource-group', $group, '--template-file', '.\infra\github-actions.bicep',
+    '--parameters', "webAppName=$app", "githubSubject=$subject")
+az deployment group what-if @identityArgs
+```
+
+The preview should add only a deployment identity, its branch-scoped federated
+credential, and a **Website Contributor** assignment on the existing site.
+The deployment identity is separate from the app's runtime identity. No publish
+profile, client secret, or demo access code goes into GitHub.
+
+```powershell
+$clientId = az deployment group create @identityArgs --name tokecon-github-actions `
+    --query properties.outputs.clientId.value --output tsv
+gh variable set AZURE_CLIENT_ID --repo $repo --body $clientId
+gh variable set AZURE_TENANT_ID --repo $repo --body (az account show --query tenantId -o tsv)
+gh variable set AZURE_SUBSCRIPTION_ID --repo $repo --body (az account show --query id -o tsv)
+gh variable set AZURE_RESOURCE_GROUP --repo $repo --body $group
+gh variable set AZURE_WEBAPP_NAME --repo $repo --body $app
+```
+
+Once Azure authorization has propagated and the existing live Foundry setup
+has been verified, enable publishing and trigger a fresh run:
+
+```powershell
+gh variable set AZURE_DEPLOY_ENABLED --repo $repo --body 'true'
+gh workflow run ci-deploy.yml --repo $repo --ref main
+```
+
+Actions deploys the ZIP using the site's existing Oryx build and verifies the
+served commit, workload version, Foundry readiness, and pricing. It does not
+reprovision Azure or run paid demo comparisons. Run the live acceptance checks
+below separately. Set `AZURE_DEPLOY_ENABLED` to `false` to pause releases
+without disabling CI.
 
 ## Verify real usage and dry-run the demo
 
@@ -190,24 +265,27 @@ and no pull request has been opened.
    hits. Five requests won't show `rc-06`. Confirm **Fact-guarded** preserves
    the plan and refund destination; `rc-09` is an additional English card-refund
    paraphrase, and the two-topic `rc-10` should bypass.
-4. Measure the first and later candidate attempts for the runaway invoices
-   in **New evidence + guardrails**. Set `TIGHT_KILL_SWITCH_USD` using the
+4. Confirm the candidate stops after one initial attempt and three retries on
+   the runaway invoices in **Three-retry guardrail**. Press **Stop baseline
+   retries** in a separate run and check that the other lane still finishes.
+   Set `TIGHT_KILL_SWITCH_USD` using the
    measured spend so that tight mode stops early and hands off. First attempts
    on the runaway invoices cost $0.0002912–$0.0003072 in calibration, so this
    deployment uses `TIGHT_KILL_SWITCH_USD=0.00025`. It checks the budget after
    a failed attempt, not partway through a model call. This tight limit can
    also stop a recoverable invoice before a second attempt.
-5. Run all nine modes five times at maximum size and keep the JSON evidence.
-   Confirm ten-request timings against the 90-second target. `mr-05` now asks
-   for a calculation backed by the policy corpus. Check the router's selected
-   models and fees, both Decision tiers, and the fault-labelled FX retry chain.
+5. Run all nine modes five times at both default and maximum sizes. Keep both
+   JSON reports and verify the release ID. Confirm ten-request timings against
+   the 90-second target, at least two actual model families in the guided mode,
+   both Decision tiers, zero input-cache activity in the response-cache runs,
+   lower response-cache spend, and the fault-labelled FX retry chain.
    Naive reuse, no retries and tight budgets should lose expected outcomes;
    never treat those intentional misses as a broken demo. Report Small-only
    quality as measured, not as a guaranteed drop.
 
 ```powershell
 $url = 'https://<app-host>'
-python -m scripts.smoke_test --base-url $url
+python -m scripts.smoke_test --base-url $url --rounds 5 --assert-stories --fail-fast --output .data\live-default-verification.json
 python -m scripts.smoke_test --base-url $url --rounds 5 --max-counts --assert-stories --fail-fast --output .data\live-verification.json
 python -m scripts.export_replays --base-url $url
 python -m scripts.browser_test --base-url $url --source live --channel msedge
@@ -223,6 +301,8 @@ exercises Replay, the access dialog, live streaming and agent receipts.
 Capture a Live Scoreboard screenshot before playing recordings: Replay
 updates the board with a Replay badge. Replay uses original event timing and
 makes no inference calls. Use `--verify-replays` to check HTTPS Replay at 2× speed.
+Replays and Scoreboard rows are release-specific. Export fresh Live recordings
+after a workload change; older recordings are retained only as historical evidence.
 
 In Application Insights **Logs**, verify model calls and completed runs:
 
@@ -262,7 +342,7 @@ customEvents
   credentials, then play the exported recordings from `replays/`. Check this
   on the presenting laptop offline before the event.
 
-## Hosted verification — 23 November 2026
+## Historical hosted verification — 23 November 2026 (v5)
 
 The `english-foundry-v5` deployment passed **45 of 45** end-to-end comparisons
 across five full rounds on the same release. Each support run compared 10

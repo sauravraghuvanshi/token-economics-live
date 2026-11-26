@@ -6,16 +6,19 @@ export const unitCost = (lane, incomplete = false) => {
   if (!lane?.done || incomplete || lane.complete === false) return "—";
   return lane.accepted === 0 ? "n/a" : usd(lane.cpa_usd, 5);
 };
-const routeMix = lane => Object.entries(lane?.route_mix || {}).map(([tier, n]) => `${n} ${tier}`);
+const modelMix = lane => Object.entries(lane?.model_mix || {});
+const modelCount = models => `${models.length} ${models.length === 1 ? "model" : "models"}`;
+const modelNames = models => models.map(([model, n]) => `${n} × ${model.replace(/-\d{4}-\d{2}-\d{2}$/, "")}`).join(" · ");
 
 export function metrics(lever, data, count) {
   const c = data?.control || {}, a = data?.candidate || {};
-  const quality = !c.done || c.done !== a.done ? null : a.accepted - c.accepted;
+  const quality = !c.done || c.done !== a.done || data.baseline_stop_requested || data.prompt_cache_activity
+    ? null : a.accepted - c.accepted;
   const priced = data?.complete !== false;
   const money = (lane, render) => priced && lane.done ? render(lane) : "—";
   const signal = value => value > 0 ? "pass" : value < 0 ? "miss" : "";
   const metric = (label, left, right, note, tone) => ({ label, left, right, note, tone });
-  const route = routeMix(a).join(" / ");
+  const routes = modelMix(a);
   const entries = [
     metric("Cost per accepted outcome", unitCost(c, !priced), unitCost(a, !priced),
       !priced ? "Incomplete costs"
@@ -32,9 +35,11 @@ export function metrics(lever, data, count) {
       data?.savings_pct == null ? "" : signal(data.savings_pct)),
     {
       prompt_caching: metric("Cached input share", pct(c.cached_share_pct), pct(a.cached_share_pct), "Cache reads ÷ input tokens"),
-      model_routing: metric("Model tiers used", route || "—", null, "With the lever · answer calls"),
+      model_routing: metric("Answer models with the lever", routes.length ? modelCount(routes) : "—", null,
+        routes.length ? modelNames(routes) : "Models that answered, not requested tiers"),
       response_cache: metric("Answer model calls", asNum(c.model_calls), asNum(a.model_calls),
-        data ? `${pair(latency(c.avg_latency_ms), latency(a.avg_latency_ms))} avg. latency` : "Excludes similarity lookups"),
+        data ? `${num(a.cache_hits)} skipped with the lever · input cache reads ${pair(num(c.tokens.cached), num(a.tokens.cached))}`
+          : "A hit skips the answer call"),
       retry_killswitch: metric("Paid model calls", asNum(c.calls), asNum(a.calls),
         a.wasted_token_share_pct != null ? `${pair(pct(c.wasted_token_share_pct), pct(a.wasted_token_share_pct))} repeated-evidence token share`
           : "Extractor and reviewer calls"),
@@ -69,8 +74,8 @@ function measured(lever, mode, run) {
       return `Token reads: ${read} (${readers.length}/${a.done} requests with the lever); writes: ${written}.${first}`;
     }
     case "model_routing": {
-      const mix = routeMix(a).join(", ");
-      const starts = mix ? `With the lever: ${mix}. ` : "";
+      const mix = modelMix(a);
+      const starts = mix.length ? `With the lever: ${modelNames(mix)}. ` : "";
       const dips = changed.filter(row => row.status !== "error" && !row.pass);
       if (mode === "small_all") return `${starts}${dips.length ? `Misses${examples(dips)}.` : "No misses in the changed lane."}`;
       if (mode === "decision_router") {
@@ -79,7 +84,8 @@ function measured(lever, mode, run) {
         return `${starts}${plural(classified.length, "recorded decision")}; ${plural(escalated.length, "small recommendation")} sent to frontier.`;
       }
       const fees = select(changed, d => d.routing_fee_usd != null);
-      return `${starts}${plural(fees.length, "request")} reported a routing fee.`;
+      const pools = select(changed, d => d.router_mode === "quality");
+      return `${starts}${plural(pools.length, "request")} used the quality pool; ${plural(fees.length, "request")} reported a routing fee.`;
     }
     case "response_cache": {
       const hits = select(changed, d => d.cache_action === "hit");
@@ -87,15 +93,16 @@ function measured(lever, mode, run) {
       const bypassed = select(changed, d => d.cache_action === "bypass");
       const embeddings = changed.reduce((n, row) => n + (row.calls || []).filter(call => call.kind === "embedding").length, 0);
       return `${plural(hits.length, "hit")} skipped answer generation; ${plural(wrong.length, "reused answer")} failed checks${examples(wrong)}. `
-        + (mode === "naive" ? `${plural(embeddings, "embedding lookup")} recorded.` : `${plural(bypassed.length, "question")} bypassed the cache.`);
+        + (mode === "naive" ? `${plural(embeddings, "embedding lookup")} recorded.` : `${plural(bypassed.length, "question")} bypassed the cache.`)
+        + ` Input-cache reads: ${pair(num(c.tokens.cached), num(a.tokens.cached))}; writes: ${pair(num(c.tokens.cache_write), num(a.tokens.cache_write))}.`;
     }
     case "retry_killswitch": {
       const recovered = rows => select(rows, (d, row) => row.pass && d.attempts?.length > 1).length;
       const handed = select(changed, d => d.outcome === "handoff");
-      const stop = mode === "tight" ? "kill switch" : mode === "no_retries" ? "no retries" : "no new evidence";
+      const stop = mode === "tight" ? "kill switch" : mode === "no_retries" ? "no retries" : "retry limit";
       const stopped = select(handed, d => d.stop === stop);
       return `Recovered after a retry: ${pair(recovered(run.results.filter(row => row.lane === "control")), recovered(changed))}. `
-        + `With the lever: ${plural(handed.length, "handoff")}; ${stopped.length} stopped by ${stop === "no new evidence" ? "repeated evidence" : stop === "no retries" ? "the zero-retry rule" : "the spend cap"}${examples(stopped)}.`;
+        + `With the lever: ${plural(handed.length, "handoff")}; ${stopped.length} stopped by ${stop === "retry limit" ? "the three-retry limit" : stop === "no retries" ? "the zero-retry rule" : "the spend cap"}${examples(stopped)}.`;
     }
     default: return "";
   }
@@ -112,6 +119,15 @@ function take(run) {
   if (!d || d.complete === false || d.control.done !== run.runCount || d.candidate.done !== run.runCount
       || run.results.some(row => row.status === "error" || row.status === "price_missing")) {
     return ["Incomplete", "Some results or prices are missing. There’s no reliable cost-per-outcome verdict for this batch.", "warn"];
+  }
+  if (d.baseline_stop_requested) {
+    const message = d.baseline_stopped ? "Costs include attempts that already ran."
+      : "No further retry was pending when the run ended.";
+    return [d.baseline_stopped ? "Baseline retries stopped" : "Baseline stop requested",
+      `${message} This batch does not produce a savings verdict.`, "warn"];
+  }
+  if (d.prompt_cache_activity) {
+    return ["Prompt-cache activity detected", "Both lanes' costs are shown, but they do not isolate response-cache savings.", "warn"];
   }
   const accepted = d.candidate.accepted - d.control.accepted;
   const change = d.cpa_change_pct == null ? null : Number(d.cpa_change_pct);

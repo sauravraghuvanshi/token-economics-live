@@ -95,7 +95,6 @@ module web './modules/appservice.bicep' = {
       MIN_REQUEST_COUNT: '5'
       MAX_REQUEST_COUNT: '10'
       DECISION_CONFIDENCE_MIN: '0.70'
-      RETRY_LIMIT: '2'
       SAFETY_CEILING: '6'
       DOC_TOKEN_BUDGET: '8000'
       MAX_SPEND_PER_HOUR_USD: '2.00'

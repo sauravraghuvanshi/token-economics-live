@@ -1,9 +1,13 @@
+import asyncio
 import json
+from dataclasses import replace
 from decimal import Decimal
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.fake import FakeClient
 from app.guards import SpendLimit, SpendWindow
 from app.main import create_app
 from app.settings import Settings
@@ -66,7 +70,7 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
         events = get_events(api, run_id)
         assert events[0][0] == "run_started" and events[0][1]["source"] == "fake"
         assert events[-1][0] == "run_completed" and events[-1][1]["saved_replay"]
-        assert [name for name, _ in events[1:-1]] == [
+        assert [name for name, _ in events[1:-1] if name not in {"attempt_started", "attempt_checked"}] == [
             "request_started", "request_started", "lane_result", "lane_result", "kpis",
         ] * count
         for lane in ("control", "candidate"):
@@ -101,7 +105,9 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
         assert not any(r["totals"]["tokens"]["cached"] for r in control)
     elif mode == "foundry_router":
         assert all(row["lever_detail"]["routing_fee_usd"] for row in candidate)
-        assert {row["lever_detail"]["tier"] for row in candidate} == {"small", "frontier"}
+        assert {call["response_model"] for row in candidate for call in row["calls"] if call["kind"] == "router"} == {
+            "gpt-4.1-mini", "gpt-6.1-sol",
+        }
     elif mode == "decision_router":
         assert candidate[2]["lever_detail"]["tier"] == "frontier"
         assert candidate[0]["lever_detail"]["tier"] == "small"
@@ -112,6 +118,10 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
         assert all(row["pass"] for row in candidate)
         assert [row["request_id"] for row in candidate if not row["calls"]] == ["rc-02", "rc-05", "rc-08", "rc-09"]
         assert candidate[-1]["lever_detail"]["cache_action"] == "bypass"
+        totals = events[-1][1]["summary"]
+        assert totals["control"]["tokens"]["cached"] == totals["candidate"]["tokens"]["cached"] == 0
+        assert totals["control"]["tokens"]["cache_write"] == totals["candidate"]["tokens"]["cache_write"] == 0
+        assert Decimal(totals["candidate"]["cost_usd"]) < Decimal(totals["control"]["cost_usd"])
     elif mode == "naive":
         assert {row["request_id"] for row in candidate if row["lever_detail"].get("wrong_hit")} >= {"rc-03", "rc-06"}
         assert all(row["calls"][0]["kind"] == "embedding" for row in candidate)
@@ -121,8 +131,15 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
         assert len(control[1]["lever_detail"]["attempts"]) == 2 and control[1]["pass"]
         assert candidate[2]["lever_detail"]["outcome"] == "handoff"
         if mode == "guardrails":
-            assert len(candidate[2]["lever_detail"]["attempts"]) == 2
-            assert candidate[2]["lever_detail"]["stop"] == "no new evidence"
+            for fault, row in (("inv-03", candidate[2]), ("inv-06", candidate[5])):
+                assert len(row["lever_detail"]["attempts"]) == 4
+                assert any(a["repeated"] for a in row["lever_detail"]["attempts"][1:])
+                assert row["lever_detail"]["stop"] == "retry limit"
+                receipt = events.index(("lane_result", row))
+                assert [(name, data["number"]) for name, data in events[:receipt] if name.startswith("attempt_")
+                        and data["lane"] == "candidate" and data["request_id"] == fault] == [
+                    (event, attempt) for attempt in range(1, 5) for event in ("attempt_started", "attempt_checked")
+                ]
             assert candidate[1]["pass"] and candidate[4]["pass"]
             extracts = [call["sent"]["messages"][1]["content"] for call in candidate[4]["calls"]
                         if call["kind"] == "chat"]
@@ -150,6 +167,7 @@ def test_access_single_active_resume_and_follow_up(api):
     active = start(api, **body)
     second = api.post("/api/runs", json=body, headers={"X-Demo-Code": "fixture-code"})
     assert second.status_code == 409
+    assert api.post(f"/api/runs/{active}/stop-baseline", headers={"X-Demo-Code": "fixture-code"}).status_code == 409
     first = get_events(api, active)
     second = api.get(f"/api/runs/{active}/events", headers={"Last-Event-ID": "4"})
     assert decode(second.text) == first[4:]
@@ -158,6 +176,77 @@ def test_access_single_active_resume_and_follow_up(api):
     }, headers={"X-Demo-Code": "fixture-code"}).json()
     assert ask["cache_action"] == "hit" and ask["cost_usd"] == "0" and not ask["graded"]
     assert api.post("/api/cache/clear", headers={"X-Demo-Code": "fixture-code"}).json()["cleared"]
+
+
+def test_stop_blocks_future_baseline_retries_without_replacing_evidence(tmp_path):
+    settings = Settings(foundry_mode="fake", data_dir=tmp_path, demo_access_code="fixture-code")
+    armed, in_flight, resume = Event(), Event(), Event()
+
+    class GateRetry(FakeClient):
+        async def invoke(self, kind, deployment, body, ctx):
+            if armed.is_set() and (ctx.request_id, ctx.lane, ctx.attempt, kind) == ("inv-03", "control", 2, "chat"):
+                in_flight.set()
+                assert await asyncio.to_thread(resume.wait, 8), "Test did not release the second extraction."
+            return await super().invoke(kind, deployment, body, ctx)
+
+    with TestClient(create_app(settings, GateRetry(settings))) as api:
+        headers = {"X-Demo-Code": "fixture-code"}
+        archive = "/api/replays/retry_killswitch/guardrails/recording"
+        normal_id = start(api, "retry_killswitch", "guardrails", 6)
+        normal = get_events(api, normal_id)
+        board = api.get("/api/scoreboard").json()
+        previous = api.get(archive, headers=headers).json()
+        armed.set()
+        run_id = start(api, "retry_killswitch", "guardrails", 6)
+        stop = f"/api/runs/{run_id}/stop-baseline"
+        try:
+            assert in_flight.wait(5), "The failed baseline did not begin its first retry."
+            assert api.post(stop).status_code == 401
+            assert api.post(stop, headers={"X-Demo-Code": "wrong"}).status_code == 401
+            assert api.post(stop, headers=headers).json() == {"baseline_stop_requested": True}
+            assert api.post(stop, headers=headers).status_code == 200
+            snapshot = api.get(f"/api/runs/{run_id}").json()
+            assert snapshot["baseline_stop_requested"] and not snapshot["done"]
+        finally:
+            resume.set()
+        events = get_events(api, run_id)
+        assert [name for name, _ in events].count("baseline_stop_requested") == 1
+        baseline = {r["request_id"]: r for r in by_lane(events, "control")}
+        interrupted = baseline["inv-03"]
+        assert interrupted["lever_detail"]["stop"] == "presenter stopped retries"
+        assert [call["kind"] for call in interrupted["calls"]].count("chat") == 2
+        assert Decimal(interrupted["totals"]["cost_usd"]) == sum(Decimal(c["cost_usd"]) for c in interrupted["calls"])
+        assert all(len(baseline[key]["lever_detail"]["attempts"]) == 1 for key in ("inv-04", "inv-05", "inv-06"))
+        assert baseline["inv-04"]["pass"] and not baseline["inv-05"]["pass"]
+        assert [(r["pass"], r["totals"]) for r in by_lane(events, "candidate")] == [
+            (r["pass"], r["totals"]) for r in by_lane(normal, "candidate")
+        ]
+        completed = events[-1][1]
+        assert completed["summary"]["baseline_stopped"] and completed["summary"]["complete"]
+        assert completed["summary"]["savings_pct"] is None and not completed["saved_replay"]
+        assert api.get("/api/scoreboard").json() == board
+        assert api.get(archive, headers=headers).json() == previous
+        assert api.post(stop, headers=headers).status_code == 409
+
+
+def test_response_cache_meter_activity_invalidates_comparison(tmp_path):
+    settings = Settings(foundry_mode="fake", data_dir=tmp_path)
+
+    class LeakyProvider(FakeClient):
+        async def invoke(self, kind, deployment, body, ctx):
+            reply = await super().invoke(kind, deployment, body, ctx)
+            if (ctx.request_id, ctx.lane) == ("rc-01", "control"):
+                return replace(reply, usage={**reply.usage, "prompt_tokens_details": {"cached_tokens": 1024}})
+            return reply
+
+    with TestClient(create_app(settings, LeakyProvider(settings))) as api:
+        run_id = start(api, "response_cache", "fact_guarded", 5)
+        completed = get_events(api, run_id)[-1][1]
+        summary = completed["summary"]
+        assert summary["control"]["tokens"]["cached"] == 1024
+        assert summary["complete"] and summary["prompt_cache_activity"]
+        assert summary["savings_pct"] is None and not completed["saved_replay"]
+        assert api.get("/api/scoreboard").json() == {"runs": []}
 
 
 def test_rolling_spend_survives_restart(tmp_path):

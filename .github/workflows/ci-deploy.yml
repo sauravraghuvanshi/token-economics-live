@@ -3,34 +3,145 @@ on:
   push: {}
   pull_request: {}
   workflow_dispatch: {}
+
 permissions:
   contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       FOUNDRY_MODE: fake
+    outputs:
+      workload-version: ${{ steps.package.outputs.workload-version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12', cache: pip }
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: ruff check . && mypy app && pytest -q
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Check Python and browser scripts
+        shell: bash
+        run: |
+          ruff check .
+          mypy app
+          pytest -q
+          for file in app/static/app.js app/static/components/*.js; do
+            node --input-type=module --check < "$file"
+          done
+      - name: Package the tested revision
+        id: package
+        shell: bash
+        run: |
+          zip="$RUNNER_TEMP/tokecon.zip"
+          git archive --format=zip --output="$zip" HEAD app config/pricing.json requirements.txt tests/fixtures
+          python - "$zip" "$GITHUB_SHA" >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          from app.dataset import WORKLOAD_VERSION
+
+          with ZipFile(sys.argv[1], "a", compression=ZIP_DEFLATED) as package:
+              package.writestr("app/static/build.json", json.dumps({"commit": sys.argv[2]}))
+          print(f"workload-version={WORKLOAD_VERSION}")
+          PY
+          python -m zipfile -t "$zip"
+      - name: Retain the App Service package
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tokecon-appservice
+          path: ${{ runner.temp }}/tokecon.zip
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+          compression-level: 0
+
   deploy:
-    if: github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
+    if: >-
+      github.repository == 'sauravraghuvanshi/token-economics-live' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      vars.AZURE_DEPLOY_ENABLED == 'true'
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: tokecon-production
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
     env:
-      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
-      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_CORE_OUTPUT: none
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: Azure/setup-azd@v2
-      - run: azd auth login --client-id "$AZURE_CLIENT_ID" --federated-credential-provider github --tenant-id "$AZURE_TENANT_ID"
-      - run: azd deploy --no-prompt
+      - name: Require the current main revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+            echo "::error::This revision is no longer the tip of main. Run the workflow for current main."
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tokecon-appservice
+          path: ${{ runner.temp }}/tokecon-release
+      - name: Sign in to Azure with OIDC
+        uses: Azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Publish to the existing App Service
+        id: publish
+        shell: bash
+        run: |
+          : "${AZURE_RESOURCE_GROUP:?Set AZURE_RESOURCE_GROUP in repository variables}"
+          : "${AZURE_WEBAPP_NAME:?Set AZURE_WEBAPP_NAME in repository variables}"
+          target=(--resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --only-show-errors)
+          hostname="$(az webapp show "${target[@]}" --query defaultHostName --output tsv)"
+          runtime="$(az webapp config show "${target[@]}" --query linuxFxVersion --output tsv)"
+          remote_build="$(az webapp config appsettings list "${target[@]}" \
+            --query "[?name=='SCM_DO_BUILD_DURING_DEPLOYMENT'].value | [0]" --output tsv)"
+          if [[ -z "$hostname" || "$runtime" != 'PYTHON|3.12' || "${remote_build,,}" != true ]]; then
+            echo "::error::Expected an existing Linux Python 3.12 App Service with remote ZIP builds enabled."
+            exit 1
+          fi
+          az webapp deploy "${target[@]}" --type zip \
+            --src-path "$RUNNER_TEMP/tokecon-release/tokecon.zip" --async false --track-status false
+          printf 'url=https://%s\n' "$hostname" >> "$GITHUB_OUTPUT"
+      - name: Verify the deployed revision and live readiness
+        env:
+          SITE_URL: ${{ steps.publish.outputs.url }}
+          WORKLOAD_VERSION: ${{ needs.test.outputs.workload-version }}
+        shell: bash
+        run: |
+          deadline=$((SECONDS + 300))
+          while (( SECONDS < deadline )); do
+            if [[ "$(curl -fsS --max-time 10 "$SITE_URL/healthz")" == ok ]] &&
+                curl -fsS --max-time 10 "$SITE_URL/static/build.json?revision=$GITHUB_SHA" |
+                  jq -e --arg sha "$GITHUB_SHA" '.commit == $sha' >/dev/null &&
+                curl -fsS --max-time 10 "$SITE_URL/api/config" |
+                  jq -e --arg version "$WORKLOAD_VERSION" '.workload_version == $version and .mode == "live"' >/dev/null &&
+                curl -fsS --max-time 10 "$SITE_URL/api/status" |
+                  jq -e '.mode == "live" and .foundry == "ok" and .prices_verified and .missing_prices == []
+                    and (.deployments | length) == 5 and (.agents | length) == 6' >/dev/null; then
+              printf '[%s](%s) is live with verified prices, five models, and six agents.\n' \
+                "$WORKLOAD_VERSION" "$SITE_URL" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::The deployed revision or live Foundry readiness did not verify at $SITE_URL."
+          exit 1

@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from ..calls import CallSession
@@ -14,6 +15,11 @@ TIER_QUESTION = {
                      "calculation or step-by-step reasoning."),
     },
 }
+ROUTER_POOLS = {
+    "cost": ("gpt-4.1-mini",),
+    "quality": ("gpt-4.1", "gpt-6.1-sol"),
+}
+MODEL_VERSION_SUFFIX = re.compile(r"-[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
 def probability(value: Any) -> float:
@@ -22,41 +28,58 @@ def probability(value: Any) -> float:
     return float(value)
 
 
+async def classify(calls: CallSession, cfg: Settings, text: str) -> tuple[bool, dict[str, Any]]:
+    if not cfg.decision_deployment:
+        raise ModelError("Configure a Decision deployment for this mode.")
+    judgment = await calls.invoke("decision", cfg.decision_deployment,
+                                  {"state": text, "questions": {"tier": TIER_QUESTION}})
+    try:
+        tier = judgment.result["tier"]["choice"]
+        confidence = probability(judgment.result["tier"]["probabilities"][tier])
+    except (KeyError, TypeError):
+        raise ModelError("Decision model did not return a routable choice.") from None
+    if tier not in {"small", "frontier"}:
+        raise ModelError("Decision model returned an unknown tier.")
+    return tier == "small" and confidence >= cfg.decision_confidence_min, {
+        "decision_tier": tier, "confidence": confidence,
+        "classified_tokens": calls.calls[-1]["usage"]["prompt"],
+        "classification_cost_usd": calls.calls[-1]["cost_usd"],
+    }
+
+
 async def route(calls: CallSession, cfg: Settings, policies: str, text: str, timestamp: str,
                 ticket: str) -> tuple[Reply, dict[str, Any]]:
     lane, mode = calls.context.lane, calls.context.mode
     detail: dict[str, Any] = {"tier": "frontier"}
     deployment, kind = cfg.frontier_deployment, "chat"
+    router_mode = None
     if lane == "candidate":
-        if mode == "foundry_router":
-            deployment, kind = cfg.router_deployment, "router"
-        elif mode == "small_all":
+        if mode == "small_all":
             deployment, detail["tier"] = cfg.small_deployment, "small"
-        elif mode == "decision_router":
-            if not cfg.decision_deployment:
-                raise ModelError("Configure a Decision deployment for this mode.")
-            judgment = await calls.invoke("decision", cfg.decision_deployment,
-                                          {"state": text, "questions": {"tier": TIER_QUESTION}})
-            try:
-                tier = judgment.result["tier"]["choice"]
-                confidence = probability(judgment.result["tier"]["probabilities"][tier])
-            except (KeyError, TypeError):
-                raise ModelError("Decision model did not return a routable choice.") from None
-            if tier not in {"small", "frontier"}:
-                raise ModelError("Decision model returned an unknown tier.")
-            chosen = tier == "small" and confidence >= cfg.decision_confidence_min
-            deployment, detail["tier"] = (cfg.small_deployment, "small") if chosen else (
-                cfg.frontier_deployment, "frontier")
-            detail |= {"decision_tier": tier, "confidence": confidence,
-                       "classified_tokens": calls.calls[-1]["usage"]["prompt"],
-                       "classification_cost_usd": calls.calls[-1]["cost_usd"]}
+        else:
+            small, decision = await classify(calls, cfg, text)
+            detail.update(decision)
+            if mode == "foundry_router":
+                deployment, kind = cfg.router_deployment, "router"
+                router_mode = "cost" if small else "quality"
+            elif small:
+                deployment, detail["tier"] = cfg.small_deployment, "small"
     # GPT-4.1 rejects explicit breakpoint fields. Use one compatible layout
     # for BOTH lanes and all eligible models in this benchmark.
+    pool = ROUTER_POOLS[router_mode] if router_mode else ()
+    controls = {"routing_config": {
+        "mode": router_mode, "models": list(pool), "session_affinity": {"strategy": "none"},
+    }} if router_mode else None
     reply = await answer(calls, cfg, policies, text, timestamp, ticket, deployment=deployment,
-                         kind=kind, explicit_supported=False)
-    if kind == "router":
-        detail["tier"] = ("small" if reply.model.lower().startswith("gpt-4.1-mini") else
-                          "mid" if reply.model.lower().startswith("gpt-4.1") else "frontier")
+                         kind=kind, explicit_supported=False, additional=controls)
+    detail["answer_model"] = reply.model
+    if router_mode:
+        family = MODEL_VERSION_SUFFIX.sub("", reply.model.lower())
+        if (reply.routing_mode or "").lower() != router_mode or family not in pool:
+            raise ModelError(f"Foundry did not confirm the {router_mode} routing pool. "
+                             "Check preview support on the published router agent.")
+        detail.update(router_mode=reply.routing_mode, eligible_models=list(pool),
+                      tier={"gpt-4.1-mini": "small", "gpt-4.1": "mid", "gpt-6.1-sol": "frontier"}[family])
         for line in calls.calls[-1]["calculation"]:
             if line["label"] == "router fee (all input)":
                 detail["routing_fee_usd"] = line["cost_usd"]

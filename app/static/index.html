@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f1e7">
+  <meta name="theme-color" content="#eff4f7">
   <title>Token Economics · Live</title>
   <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
@@ -15,7 +15,7 @@
     <div class="mast-inner frame">
       <a class="brand" href="/" aria-label="Token Economics home">
         <img src="/static/mark.svg" alt="" width="34" height="34">
-        <span>Token Economics <b>· Live</b></span>
+        <span>Token Economics <b>Live</b></span>
       </a>
       <div class="header-actions">
         <button id="howto-btn" type="button" disabled><span class="braces" aria-hidden="true">{ }</span> How to implement</button>
@@ -35,7 +35,7 @@
         <p class="subtitle" id="subtitle">The same support questions, model and policies in both lanes.</p>
       </div>
       <aside class="criterion" aria-label="How we compare runs">
-        <span class="eyebrow">The unit that matters</span>
+        <div class="criterion-top"><span class="eyebrow">The decision metric</span><span class="criterion-mark" aria-hidden="true"></span></div>
         <strong>Cost per accepted outcome</strong>
         <span>Total model cost <b aria-label="divided by">÷</b> outcomes that pass</span>
       </aside>
@@ -57,6 +57,19 @@
           </div>
         </form>
       </div>
+      <section id="retry-monitor" class="retry-monitor" aria-labelledby="retry-monitor-title" hidden>
+        <div class="monitor-heading">
+          <div>
+            <h2 id="retry-monitor-title">Retry monitor</h2>
+            <p id="stop-note" class="muted" role="status"></p>
+          </div>
+          <button id="stop-baseline" class="stop-button" type="button" aria-describedby="stop-note" hidden>Stop baseline retries</button>
+        </div>
+        <dl class="monitor-lanes" aria-live="polite">
+          <div><dt>Without the lever</dt><dd id="retry-control"></dd></div>
+          <div><dt>With the lever</dt><dd id="retry-candidate"></dd></div>
+        </dl>
+      </section>
       <section class="ledger" aria-labelledby="ledger-title">
         <div class="section-head">
           <div class="section-title"><h2 id="ledger-title">Run ledger</h2><span id="evidence-source" class="pill" hidden></span><span id="foundry-portal" class="portal"></span></div>

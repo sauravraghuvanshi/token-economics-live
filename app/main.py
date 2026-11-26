@@ -19,7 +19,7 @@ from .grading import parse_answer
 from .guards import SpendLimit, authorized, check_access
 from .pricing import PriceBook, usd
 from .runs import TABS, Demo, Run, now
-from .settings import ROOT, Settings
+from .settings import MAX_DOCUMENT_RETRIES, ROOT, Settings
 from .sse import stream
 from .status import StatusProbe
 from .telemetry import setup
@@ -100,6 +100,8 @@ def create_app(config: Settings | None = None, client: ModelClient | None = None
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         )
+        if request.url.path.startswith("/static/") and request.url.path.endswith((".css", ".js")):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     def demo_for(request: Request) -> Demo:
@@ -171,6 +173,7 @@ def create_app(config: Settings | None = None, client: ModelClient | None = None
                          "min": 3 if invoice else cfg.min_request_count, "max": 6 if invoice else cfg.max_request_count}
         return {"tabs": tabs, "mode": cfg.source, "workload_version": WORKLOAD_VERSION,
                 "deployments": cfg.deployments,
+                "retry_attempts": {"control": cfg.safety_ceiling, "candidate": MAX_DOCUMENT_RETRIES + 1},
                 "access_code_required": cfg.source == "live" or cfg.access_code_configured,
                 "prompt_cache_mode": cfg.prompt_cache_mode, "pricing": demo.prices.model_dump(mode="json"),
                 "prefix_layout": demo.data.prefix_layout,
@@ -189,6 +192,20 @@ def create_app(config: Settings | None = None, client: ModelClient | None = None
         if not lowest <= body.count <= highest:
             raise HTTPException(422, f"Choose between {lowest} and {highest} requests.")
         return {"run_id": demo.start(body.lever, body.mode, body.count).id}
+
+    @api.post("/api/runs/{run_id}/stop-baseline")
+    async def stop_baseline(request: Request, run_id: UUID, code: AccessHeader = None) -> dict[str, bool]:
+        demo = demo_for(request)
+        check_access(demo.settings, code)
+        run = find(request, run_id)
+        if run.done or demo.active_run_id != run.id or run.lever != "retry_killswitch" or run.source == "replay":
+            raise HTTPException(409, "Only the baseline of an active invoice run can be stopped.")
+        if not run.baseline_stop_requested:
+            if any(row["lane"] == "control" and row["idx"] == run.count for row in run.results):
+                raise HTTPException(409, "The baseline has already finished.")
+            run.baseline_stop_requested = True
+            run.emit("baseline_stop_requested", {})
+        return {"baseline_stop_requested": True}
 
     @api.get("/api/runs/{run_id}/events")
     async def events(request: Request, run_id: UUID, last_event_id: Annotated[str | None, Header()] = None):

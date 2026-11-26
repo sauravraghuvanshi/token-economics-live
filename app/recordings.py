@@ -34,6 +34,7 @@ class Recordings:
                     continue
                 if (data["schema"] != 1 or data["lever"] != lever or data["mode"] != mode
                         or data["source"] not in {"live", "fake"} or not data["summary"]["complete"]
+                        or data["summary"].get("baseline_stop_requested") or data["summary"].get("prompt_cache_activity")
                         or data["events"][0]["event"] != "run_started"
                         or data["events"][-1]["event"] != "run_completed"):
                     raise ValueError("Invalid recorded run")

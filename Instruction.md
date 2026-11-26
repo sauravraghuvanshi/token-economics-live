@@ -235,7 +235,7 @@ token-economics-live/
 | `DEFAULT_REQUEST_COUNT` / `MIN_REQUEST_COUNT` / `MAX_REQUEST_COUNT` | No | `5` / `5` / `10` | Count selector for tabs 1–3 |
 | `DECISION_CONFIDENCE_MIN` | No | `0.70` | Below this, the decision router escalates to the frontier tier |
 | `NAIVE_SIMILARITY_THRESHOLD` | No | `0.80` | Tab 3 trap mode; calibrate in the dry run (section 19) |
-| `RETRY_LIMIT` / `SAFETY_CEILING` / `DOC_TOKEN_BUDGET` | No | `2` / `6` / `8000` | Tab 4 |
+| `SAFETY_CEILING` / `DOC_TOKEN_BUDGET` | No | `6` / `8000` | Tab 4; the default candidate hard limit is three retries |
 | `TIGHT_KILL_SWITCH_USD` | No | empty | Tab 4 "Tight kill switch" budget per document; set in the dry run; mode hidden while empty |
 | `DEMO_ACCESS_CODE` | Yes in Azure | (secret you choose) | Required header `X-Demo-Code` on every endpoint that spends money |
 | `MAX_SPEND_PER_HOUR_USD` | No | `2.00` | Spend guard across all runs (safety default; adjust) |
@@ -368,8 +368,9 @@ Do **not** set `temperature` or `top_p` (some reasoning models reject them). Use
 | Layout | Used by | Messages |
 |---|---|---|
 | **Customer first** (breaks the prefix) | Tab 1 control | `system`: `ROLE_INSTRUCTIONS` only. `user`: `"Received <ISO time> · ticket <id>\nCustomer: <message>\n\n## Policies\n\n<policies.md>"` |
-| **Policies first** (stable prefix) | Tab 1 candidate; both lanes of tabs 2 and 3 | `system`: content block `[{type: text, text: <stable prefix>, prompt_cache_breakpoint: {mode: explicit}}]` (breakpoint only when `PROMPT_CACHE_MODE=explicit`). `user`: `"Customer: <message>\n\n(received <ISO time> · ticket <id>)"`. Request extras: `prompt_cache_key = PROMPT_CACHE_KEY`; when explicit, `prompt_cache_options = {mode: explicit, ttl: 30m}` |
-| **Short question only** | Tab 2 decision call | Decision API `state` = the customer message only (no policies) |
+| **Policies first** (stable prefix) | Tab 1 candidate and both lanes of tab 2 | `system`: stable prefix. `user`: `"Customer: <message>\n\n(received <ISO time> · ticket <id>)"`. Use `prompt_cache_key = PROMPT_CACHE_KEY`. Tab 1 candidate adds an explicit breakpoint and 30-minute TTL when `PROMPT_CACHE_MODE=explicit`; tab 2 omits explicit fields for older eligible models. |
+| **Policies first, no input cache** | Tab 3: baseline and candidate generation on supported GPT Standard | Same messages in both lanes, `prompt_cache_options = {mode: explicit}` without a key or breakpoint. Older models use the customer-first layout with no cache fields; report any implicit reads or writes. |
+| **Short question only** | Tab 2 classifier for both routed modes | Decision API `state` = the customer message only (no policies) |
 
 Pass the caching fields with `extra_body={...}` so the code works whatever the SDK version. Code for each layout: Appendix C.
 
@@ -395,7 +396,7 @@ Common to every tab: a title, a one-line subtitle, a mode switch, a count select
 - **Subtitle:** "Send routine work to a cheaper model; keep hard cases on the frontier."
 - **Both lanes** use the *policies first* layout, so prompt caching affects them equally; only the model choice differs.
 - **Control (all modes):** frontier model for every request.
-- **Mode A, Foundry model router:** candidate calls `ROUTER_DEPLOYMENT`. Show the routed model from `response.model`, the routing fee and the total.
+- **Mode A, Foundry Model Router:** classify the question before adding policies. A confident routine result restricts the configured router to the low-cost pool; harder or uncertain questions use the quality pool. Pass the preview `routing_config` to the published router agent. Verify the returned mode and actual `response.model`, and include both the classifier and routing fees.
 - **Mode B, Decision router (pre-RAG):** candidate first sends only the customer message to Microsoft-Decision-1.1 with one `choice` question (Appendix C.3). If the choice is `small` with probability ≥ `DECISION_CONFIDENCE_MIN`, the small model answers; otherwise the frontier model answers. Both answer with the full policies prefix attached. Show `tier · 98% conf · 45 tok classified · $…`.
 - **Mode C, Small model for all (the trap):** candidate always uses the small model. Its purpose is to show that the cheapest model can miss and raise cost per accepted outcome.
 - **KPIs:** Control cost per accepted · Candidate cost per accepted · Change in cost per accepted (%) · Route mix and accepted (for example `3 small / 2 frontier · 4/5 pass`).
@@ -404,7 +405,7 @@ Common to every tab: a title, a one-line subtitle, a mode switch, a count select
 ### 11.3 Tab 3 — Response caching
 
 - **Subtitle:** "A hit skips the whole model call, but only when the key is exact."
-- **Control:** the frontier model answers every request (policies-first layout).
+- **Control:** the frontier model answers every request; there is no saved-answer lookup. Both lanes use the same prompt and disable input caching when the provider supports it. Show both lanes' input-cache read and write counts; if either is nonzero, the run does not publish an isolated savings verdict.
 - **Mode A, Fact-guarded cache (candidate):** normalise the text, strip conversational framing, detect language (Devanagari → `hi`, else `en`), match the curated patterns in `cache_patterns.json`. **Exactly one** pattern with all its parameters resolved → build the key; zero or several matches → **bypass** (call the model, do not store). The key hashes `{version, language, topic, params, product: "clouddesk", system_prompt_sha256, model: deployment}`; the display key looks like `v1:en:refund_timing:destination=card`. Miss → call the model and store the answer; hit → return the stored answer with no model call.
 - **Mode B, Naive similarity (the trap):** embed the normalised question; if cosine similarity with any stored entry is ≥ `NAIVE_SIMILARITY_THRESHOLD`, return that entry's answer regardless of facts. Embedding calls are part of the candidate's cost.
 - The cache is **cleared at the start of every run** so results repeat; a **Clear cache** button and a **live follow-up box** ("Ask a question against the cache") use the current cache; follow-ups are shown as "not graded".
@@ -418,12 +419,12 @@ Common to every tab: a title, a one-line subtitle, a mode switch, a count select
 - **Workload:** an invoice intake agent processes the documents in `invoices.json` (Appendix B.5). **Roles per attempt:** Extractor (small model, structured JSON), Tool (a **simulated** currency converter, faulty by design for USD and EUR, labelled "simulated" on screen), Validator (deterministic code), Reviewer (Microsoft-Decision-1.1 `noul` question, only after validation passes; if `DECISION_DEPLOYMENT` is empty, the small model answers yes or no). A document is **accepted** when validation passes and the reviewer's probability is ≥ 0.7.
 - **Validator errors** (codes): `MISSING_FIELD:<name>`, `GSTIN_FORMAT`, `LINE_MISMATCH:<index>` (|qty × unit_price − amount| > 1), `SUBTOTAL_MISMATCH` (|Σ line amounts − subtotal| > 1), `TOTAL_MISMATCH` (|subtotal + Σ taxes − total| > 1), `FX_RATE_UNAVAILABLE:<currency>`.
 - **Evidence key:** SHA-256 of the canonical JSON of the extraction's structured fields (vendor, GSTIN, invoice number, date, currency, line items, subtotal, taxes, total; **not** free-text notes) plus the sorted error codes.
-- **Control (all modes):** retry on any error until `SAFETY_CEILING` attempts, then stop with status `safety ceiling`.
-- **Mode A, New evidence + guardrails:** retry only while the evidence key changes, at most `RETRY_LIMIT` retries and `DOC_TOKEN_BUDGET` tokens; otherwise **hand off** to a person with the output and errors.
+- **Control (all modes):** retry failures until `SAFETY_CEILING` attempts or an authorized presenter stops future baseline retries. Let the active attempt finish; later invoices get one initial try. Keep the candidate running and exclude the stopped batch from the Scoreboard and Replay.
+- **Mode A, Three-retry guardrail:** one initial attempt followed by at most three retries. Record repeated evidence even when the fault persists. At the retry or document token limit, **hand off** with the output and errors.
 - **Mode B, No retries (limit = 0):** hand off on the first failure (shows that over-tight limits lose recoverable documents).
-- **Mode C, Tight kill switch:** like A, plus a per-document spend budget `TIGHT_KILL_SWITCH_USD`; hidden while that variable is empty.
+- **Mode C, Tight kill switch:** also stop on repeated evidence or the per-document spend cap `TIGHT_KILL_SWITCH_USD`; hidden while that variable is empty.
 - **Count selector:** 3–6 documents (default 3: invoices 1–3).
-- **Row:** an attempt chain such as `Attempt 1 ✗ → Attempt 2 ✓ → Accepted`, `Attempt 1 ✗ → Attempt 2 ✗ → no new evidence → Handoff`, or `… → safety ceiling`, with `N calls · $cost`.
+- **Live:** stream attempt and check results before the lane receipt. The receipt includes the full attempt chain, stop reason, model-call count and cost.
 - **KPIs:** Role LLM calls (control → candidate) · Cost per accepted (% change) · Wasted token share (control → candidate) · Accepted documents (control → candidate, of N). **Wasted tokens** = tokens spent on attempts whose evidence key equals the previous attempt's key in the same document.
 
 ### 11.5 Scoreboard
@@ -552,7 +553,7 @@ dependencies
 4. **App settings** (set by Bicep): every variable in 7.1 except secrets, plus `SCM_DO_BUILD_DURING_DEPLOYMENT=true` and `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true`. `DEMO_ACCESS_CODE` is set as an app setting from the azd environment and never committed.
 5. **Startup command:** `gunicorn --workers 1 --worker-class uvicorn.workers.UvicornWorker --timeout 600 --bind 0.0.0.0:8000 app.main:app`. Keep one instance and one worker: the run registry is in memory.
 6. **Streaming on App Service:** keep the 15-second heartbeat; App Service front ends close idle connections after about four minutes, and every run must finish well inside that.
-7. **CI/CD:** `azd pipeline config` creates the federated credential and repository variables; the workflow in Appendix F.3 tests on every push and deploys `main`.
+7. **CI/CD:** [Set up the GitHub Actions deployment identity](README.md#github-actions-releases). The workflow in Appendix F.3 tests pushes and pull requests and publishes the current `main` revision once enabled.
 8. **After deploy:** fill and date `config/pricing.json` (or set `PRICING_OVERRIDE_JSON`), run the smoke test, run each tab twice, then `python scripts/export_replays.py` and commit the recordings to `replays/`.
 
 Skeletons for `azure.yaml`, Bicep and the workflow: Appendix F.
@@ -1026,7 +1027,6 @@ MIN_REQUEST_COUNT=5
 MAX_REQUEST_COUNT=10
 DECISION_CONFIDENCE_MIN=0.70
 NAIVE_SIMILARITY_THRESHOLD=0.80
-RETRY_LIMIT=2
 SAFETY_CEILING=6
 DOC_TOKEN_BUDGET=8000
 TIGHT_KILL_SWITCH_USD=
@@ -1147,43 +1147,10 @@ Map azd environment values to these parameters in `infra/main.parameters.json` (
 
 ### F.3 GitHub Actions (`.github/workflows/ci-deploy.yml`)
 
-```yaml
-name: ci-deploy
-on:
-  push: { branches: [main] }
-  pull_request: {}
-  workflow_dispatch: {}
-permissions:
-  id-token: write
-  contents: read
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    env: { FOUNDRY_MODE: fake }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: ruff check . && mypy app && pytest -q
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: test
-    runs-on: ubuntu-latest
-    env:
-      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
-      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Azure/setup-azd@v2
-      - run: azd auth login --client-id "$AZURE_CLIENT_ID" --federated-credential-provider "github" --tenant-id "$AZURE_TENANT_ID"
-      - run: azd deploy --no-prompt
-```
-
-`azd pipeline config` sets the repository variables and the federated credential. Provision once with `azd provision` from a workstation; the workflow only deploys.
+See the [checked-in workflow](.github/workflows/ci-deploy.yml) and the
+[GitHub Actions release runbook](README.md#github-actions-releases). CI uses
+Fake mode. The deploy job authenticates with `main`-scoped GitHub OIDC and
+publishes only the verified application package to the existing App Service.
 
 ---
 

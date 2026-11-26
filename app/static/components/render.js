@@ -113,7 +113,8 @@ function laneCard(row, name, scale, lever, phase, openInspect) {
   const { lever_detail: d = {}, totals: t, calls = [] } = row;
   const tokens = t.tokens || {};
   const cacheHit = d.cache_action === "hit";
-  const actualModels = [...new Set(calls.map(c => c.response_model || c.deployment).filter(Boolean))];
+  const actualModels = d.answer_model ? [d.answer_model]
+    : [...new Set(calls.map(c => c.response_model || c.deployment).filter(Boolean))];
   if (d.answered_by && !cacheHit && !actualModels.includes(d.answered_by)) actualModels.unshift(d.answered_by);
   const modelText = cacheHit ? "No answer model called" : actualModels.join(" · ") || "No model reported";
   const head = el("div", null, "lane-head");
@@ -149,7 +150,8 @@ function laneCard(row, name, scale, lever, phase, openInspect) {
     cell.append(el("small", `${usageText(tokens)} · ${latency(t.latency_ms)}`));
   }
   if (d.routing_fee_usd != null) cell.append(el("p", `Routing fee ${usd(d.routing_fee_usd, 5)}`, "receipt-detail"));
-  if (d.confidence != null) cell.append(el("p", `${d.tier} · ${pct(d.confidence * 100)} confidence · `
+  if (d.router_mode) cell.append(el("p", `${d.router_mode === "quality" ? "Quality" : "Low-cost"} pool · ${d.eligible_models.join(", ")}`, "receipt-detail"));
+  if (d.confidence != null) cell.append(el("p", `${d.decision_tier} recommendation · ${pct(d.confidence * 100)} confidence · `
     + `${num(d.classified_tokens)} tokens classified · ${usd(d.classification_cost_usd, 5)}`, "receipt-detail"));
   if (d.cache_action) {
     const text = cacheHit
@@ -190,8 +192,11 @@ export function rows(config, lever, count, run, openInspect) {
     }
     const lanes = el("div", null, "lane-grid");
     for (const name of Object.keys(laneLabels)) {
+      const attempt = run.attempts?.get(`${request.id}/${name}`);
+      const attemptPhase = attempt && `Attempt ${attempt.number} of ${attempt.limit} · ${
+        attempt.errors == null ? "running" : attempt.errors.length ? "checks failed" : "checks passed"}`;
       const phase = !run.results ? "Not run yet" : run.done ? "No result received"
-        : event?.lanes.has(name) ? (run.source === "replay" ? "Playing…" : "Running…") : "Waiting in queue";
+        : event?.lanes.has(name) ? (attemptPhase || (run.source === "replay" ? "Playing…" : "Running…")) : "Waiting in queue";
       lanes.append(laneCard(index.get(`${request.id}/${name}`), name, max, lever, phase, row => openInspect(row, name, text)));
     }
     card.append(header, lanes);
@@ -247,6 +252,7 @@ export function inspect(row, lane, question, prefixCount, source, sourceLabel) {
     };
     addID("Agent version", call.foundry_agent_version);
     addID("Foundry response ID", call.foundry_response_id);
+    addID("Routing mode reported", call.routing_mode);
     const input = call.sent?.messages || call.sent?.input;
     for (const message of Array.isArray(input) ? input.filter(item => item?.role) : []) {
       const title = message.role === "system" ? "System instructions" : message.role === "user" ? "User message" : message.role;

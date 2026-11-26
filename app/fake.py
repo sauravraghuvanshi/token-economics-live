@@ -37,8 +37,10 @@ class FakeClient:
                 answers = {key: {"type": "noul", "noul": 0.98} for key in body["questions"]}
             return Reply("microsoft-decision-1.1", answers, self.samples["decision"], fixture_latency_ms=34)
         schema = body.get("response_format", {}).get("json_schema", {}).get("name")
-        if kind == "router" and request not in {"mr-03", "mr-05", "mr-07", "mr-09"}:
-            model, small = "gpt-4.1-mini", True
+        routing = body.get("extra_body", {}).get("routing_config")
+        if kind == "router" and routing:
+            model = routing["models"][-1]
+            small = model == "gpt-4.1-mini"
         if schema == "invoice":
             fixture = self.invoices[request]
             value = fixture["corrected"] if ctx.attempt > 1 and fixture.get("corrected") else fixture["first"]
@@ -60,7 +62,8 @@ class FakeClient:
         else:
             sample = "small" if small else "uncached"
         return Reply(model, json.dumps(answer, ensure_ascii=False), self.samples[sample],
-                     fixture_latency_ms=385 if small else (714 if sample == "read" else 1180))
+                     fixture_latency_ms=385 if small else (714 if sample == "read" else 1180),
+                     routing_mode=routing["mode"] if kind == "router" and routing else None)
 
     async def close(self) -> None:
         pass

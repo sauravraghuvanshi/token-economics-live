@@ -11,6 +11,7 @@ from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_DOCUMENT_RETRIES = 3
 
 
 def valid_project_endpoint(url: str) -> bool:
@@ -47,7 +48,6 @@ class Settings(BaseSettings):
     max_request_count: int = Field(default=10, ge=5, le=10)
     decision_confidence_min: float = Field(default=0.70, ge=0, le=1)
     naive_similarity_threshold: float = Field(default=0.80, ge=0, le=1)
-    retry_limit: int = Field(default=2, ge=0, le=5)
     safety_ceiling: int = Field(default=6, ge=1, le=6)
     doc_token_budget: int = Field(default=8000, ge=1)
     tight_kill_switch_usd: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)

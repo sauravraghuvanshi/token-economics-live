@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 from typing import Any
@@ -14,7 +15,7 @@ from ..dataset import Invoice
 from ..foundry import ModelError
 from ..pricing import usd
 from ..prompts import EXTRACT_SCHEMA, response_schema
-from ..settings import Settings
+from ..settings import MAX_DOCUMENT_RETRIES, Settings
 from .model_routing import probability
 
 EXTRACTOR = (
@@ -49,6 +50,7 @@ REVIEW = {
         "differs from a printed number that contradicts those checks. Reject unsupported changes."
     ),
 }
+PRESENTER_STOP = "presenter stopped retries"
 
 
 class Fields(BaseModel):
@@ -240,7 +242,10 @@ def review_state(invoice: Invoice, value: Extraction) -> dict[str, Any]:
     }
 
 
-async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple[dict[str, Any], str, list[str]]:
+async def document(
+    calls: CallSession, cfg: Settings, invoice: Invoice, progress: Callable[[str, dict[str, Any]], None],
+    stop_requested: Callable[[], bool],
+) -> tuple[dict[str, Any], str, list[str]]:
     prior = None
     output: Extraction | None = None
     errors: list[str] = []
@@ -248,10 +253,14 @@ async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple
     attempts: list[dict[str, Any]] = []
     stop = "safety ceiling"
     mode, control = calls.context.mode, calls.context.lane == "control"
-    count = cfg.safety_ceiling if control else cfg.retry_limit + 1
+    count = cfg.safety_ceiling if control else MAX_DOCUMENT_RETRIES + 1
     if not control and mode == "no_retries":
         count = 1
     for num in range(1, count + 1):
+        if control and num > 1 and stop_requested():
+            stop = PRESENTER_STOP
+            break
+        progress("attempt_started", {"number": num, "limit": count})
         before = calls.tokens["prompt"] + calls.tokens["completion"]
         ctx = replace(calls.context, attempt=num)
         instructions = EXTRACTOR
@@ -316,6 +325,7 @@ async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple
             attempts[-1]["arithmetic_reconciliation"] = reconciliation
         if subtotal_source is not None:
             attempts[-1]["subtotal_from_ocr"] = subtotal_source
+        progress("attempt_checked", {"number": num, "limit": count, "errors": list(errors), "repeated": repeated})
         if not errors:
             stop = "accepted"
             break
@@ -327,15 +337,17 @@ async def document(calls: CallSession, cfg: Settings, invoice: Invoice) -> tuple
             if tokens >= cfg.doc_token_budget:
                 stop = "document token budget"
                 break
-            if repeated:
+            if repeated and mode == "tight":
                 stop = "no new evidence"
                 break
             if num == count:
                 stop = "no retries" if mode == "no_retries" else "retry limit"
         prior = key
     accepted = stop == "accepted"
-    detail = {"attempts": attempts, "stop": stop, "outcome": ("accepted" if accepted else
-              "safety ceiling" if control else "handoff"), "wasted_tokens": wasted,
+    manual = stop == PRESENTER_STOP
+    detail = {"attempts": attempts, "stop": stop, "manual_stop": manual,
+              "outcome": "accepted" if accepted else "safety ceiling" if control and not manual else "handoff",
+              "wasted_tokens": wasted,
               "output": output.model_dump(mode="json") if output else None, "errors": errors,
               "document_spend_usd": usd(calls.cost), "simulated_tool": True}
     return detail, f"{invoice.title} · {detail['outcome']}", [] if accepted else [stop, *errors]

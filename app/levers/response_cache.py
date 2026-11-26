@@ -125,7 +125,7 @@ class ResponseCache:
                        "answered_by": entry.model}
             result = entry.answer
         else:
-            reply = await answer(calls, self.cfg, self.policies, text, timestamp, ticket)
+            reply = await answer(calls, self.cfg, self.policies, text, timestamp, ticket, cache_prompt=False)
             result = str(reply.result)
             if key is not None and display is not None:
                 detail |= {"cache_action": "miss", "key": display}

@@ -33,7 +33,7 @@ TABS: dict[str, dict[str, Any]] = {
     },
     "model_routing": {
         "title": "Model routing", "subtitle": "Send routine work to a cheaper model; keep hard cases on the frontier.",
-        "modes": {"foundry_router": "Foundry model router", "decision_router": "Decision router (pre-RAG)",
+        "modes": {"foundry_router": "Foundry Model Router · guided pools", "decision_router": "Decision router (pre-RAG)",
                   "small_all": "Small model for all · trap"},
     },
     "response_cache": {
@@ -42,7 +42,7 @@ TABS: dict[str, dict[str, Any]] = {
     },
     "retry_killswitch": {
         "title": "Retry & kill switch", "subtitle": "Keep retries that fix real errors; stop loops that never change.",
-        "modes": {"guardrails": "New evidence + guardrails", "no_retries": "No retries",
+        "modes": {"guardrails": "Three-retry guardrail", "no_retries": "No retries",
                   "tight": "Tight kill switch"},
     },
 }
@@ -64,6 +64,7 @@ class Run:
     results: list[dict[str, Any]] = field(default_factory=list)
     summary: dict[str, Any] | None = None
     done: bool = False
+    baseline_stop_requested: bool = False
     recorded_at: str | None = None
     recording_source: str | None = None
     started_clock: float = field(default_factory=time.monotonic)
@@ -85,7 +86,7 @@ class Run:
         return {"run_id": self.id, "lever": self.lever, "mode": self.mode, "count": self.count,
                 "source": self.source, "started_at": self.started_at, "summary": self.summary,
                 "done": self.done, "results": self.results, "recorded_at": self.recorded_at,
-                "recording_source": self.recording_source}
+                "recording_source": self.recording_source, "baseline_stop_requested": self.baseline_stop_requested}
 
 
 class Demo:
@@ -167,6 +168,9 @@ class Demo:
             run.emit("run_error", {"message": "The run finished, but the scoreboard could not be saved.",
                                    "fatal": False})
 
+    def measure(self, run: Run) -> dict[str, Any]:
+        return kpis(run.results, lever=run.lever, baseline_stop_requested=run.baseline_stop_requested)
+
     def session(self, ctx: CallContext) -> CallSession:
         if self.client is None:
             raise ModelError("The live client is not available.")
@@ -202,7 +206,10 @@ class Demo:
     async def process(self, run: Run, row: Request | Invoice,
                       calls: CallSession) -> tuple[dict[str, Any], str, list[str]]:
         if isinstance(row, Invoice):
-            return await document(calls, self.settings, row)
+            def progress(event: str, data: dict[str, Any]) -> None:
+                run.emit(event, {**data, "request_id": row.id, "lane": calls.context.lane})
+
+            return await document(calls, self.settings, row, progress, lambda: run.baseline_stop_requested)
         ticket = f"{run.id[:8]}-{row.id}"
         detail: dict[str, Any] = {}
         if run.lever == "model_routing":
@@ -213,7 +220,8 @@ class Demo:
             text, detail = await self.cache.lookup(calls, row.text, run.started_at, ticket)
         else:
             reply = await answer(calls, self.settings, self.data.policies, row.text, run.started_at, ticket,
-                                 policies_first=run.lever != "prompt_caching" or calls.context.lane == "candidate")
+                                 policies_first=run.lever != "prompt_caching" or calls.context.lane == "candidate",
+                                 cache_prompt=run.lever != "response_cache")
             text = str(reply.result)
         parsed = parse_answer(text)
         reasons = grade(text, row.expect)
@@ -240,10 +248,11 @@ class Demo:
                         result = await future
                         run.results.append(result)
                         run.emit("lane_result", result)
-                run.emit("kpis", kpis(run.results))
-            run.summary = {**kpis(run.results), "elapsed_ms": round((time.monotonic() - run.started_clock) * 1000)}
+                run.emit("kpis", self.measure(run))
+            run.summary = {**self.measure(run), "elapsed_ms": round((time.monotonic() - run.started_clock) * 1000)}
+            comparable = not run.baseline_stop_requested and not run.summary["prompt_cache_activity"]
             saved = False
-            if run.summary["complete"]:
+            if run.summary["complete"] and comparable:
                 final_event = {"event": "run_completed", "at_ms": run.summary["elapsed_ms"],
                                "data": {"run_id": run.id, "summary": run.summary, "saved_replay": True}}
                 try:
@@ -258,7 +267,8 @@ class Demo:
                     LOG.error("Could not save replay for run %s.", run.id)
                     run.emit("run_error", {"message": "The run finished, but the recording could not be saved.",
                                            "fatal": False})
-            self.write_board(run)
+            if comparable:
+                self.write_board(run)
             if run.source == "live":
                 completed({
                     "lever": run.lever, "mode": run.mode, "run_id": run.id, "count": run.count,
@@ -267,6 +277,9 @@ class Demo:
                     "control_accepted": run.summary["control"]["accepted"],
                     "candidate_accepted": run.summary["candidate"]["accepted"],
                     "elapsed_ms": run.summary["elapsed_ms"], "complete": run.summary["complete"],
+                    "baseline_stopped": run.summary["baseline_stopped"],
+                    "baseline_stop_requested": run.baseline_stop_requested,
+                    "prompt_cache_activity": run.summary["prompt_cache_activity"],
                 })
             run.emit("run_completed", {"summary": run.summary, "saved_replay": saved})
         except Exception as error:

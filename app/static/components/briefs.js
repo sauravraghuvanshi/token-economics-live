@@ -15,13 +15,13 @@ export const pages = {
   },
   response_cache: {
     intro: "The same support questions in both lanes. Can a saved answer replace a fresh one without changing the facts?",
-    baseline: "Generate a new answer for every question, even when the answer to an earlier question would fit.",
-    receipt: "A cache hit is not a pass. Saved answers are graded against the current question.",
+    baseline: "Generate every answer from scratch. Both lanes disable model input caching on the supported deployment.",
+    receipt: "A hit skips generation, not grading. The ledger reports input-cache reads and writes separately.",
     acceptance: "A saved or fresh answer faces the same checks for the current question.",
   },
   retry_killswitch: {
     intro: "The same invoices, checks and simulated currency tool in both lanes. Which failures are worth another try?",
-    baseline: "Retry every failure until the invoice passes or the safety ceiling stops the run, even if the error never changes.",
+    baseline: "Retry failures even when the error repeats, until the safety ceiling or the presenter stops new retries.",
     receipt: "Retries reconcile totals only when both readings agree on the printed inputs. A handoff is not a pass.",
     acceptance: "An invoice is accepted only if it passes the app’s validation and the reviewer approves it.",
   },
@@ -30,10 +30,10 @@ export const pages = {
   },
 };
 
-const guardedRetry = [
+const retrySetup = [
   "Run the same extraction, currency check and validation in both lanes. The app simulates the currency tool; it always fails for USD and EUR in this demo.",
   "On retry, recalculate derived amounts only when a second extraction confirms the printed inputs. Then validate and review the result.",
-  "Compare the extracted fields and error codes with the previous attempt. Retry only when the evidence changes and the run is within its limits.",
+  "Record repeated fields and error codes. Show whether each retry corrected a failure or repeated work.",
 ];
 
 export const experiments = {
@@ -47,12 +47,12 @@ export const experiments = {
     ],
   },
   foundry_router: {
-    change: "Let the Foundry model router pick an answer model per request. Both lanes give the answering model the full policies.",
-    watch: "Look for the model that actually answered and the routing fee. A cheaper model is only useful if the answer still passes.",
+    change: "Classify the question, then let Foundry Model Router answer from the low-cost or quality pool. This uses preview routing controls.",
+    watch: "Compare the actual model mix. Inspect each answer for the chosen pool, classifier cost and router fee.",
     steps: [
       "Keep the policy prompt and grading rules unchanged. Use a policy-first prompt supported by every eligible model.",
-      "Route requests through the configured Foundry router instead of forcing the frontier model.",
-      "Use the returned model ID for pricing. Include the routing fee on input tokens and compare the number of passes.",
+      "Use the classifier on question text alone. A confident routine result gets the low-cost pool; harder or uncertain cases get the quality pool.",
+      "Send the eligible models to the same Foundry router. Check the mode and model in its response, and count both the classifier and routing fee.",
     ],
   },
   decision_router: {
@@ -78,6 +78,7 @@ export const experiments = {
     change: "Reuse only when the topic and facts match. Call the answer model only on a miss or bypass, never on a hit.",
     watch: "A reworded card-refund question can reuse an answer; account credit needs a different one. Ambiguous questions bypass the cache.",
     steps: [
+      "On supported GPT Standard deployments, set explicit prompt caching with no breakpoints in both lanes to isolate saved-answer reuse.",
       "Allow caching only for known questions with one clear topic and all key facts resolved.",
       "Put the topic, facts, language, policy version and answer deployment into the key. A card refund and account credit need different keys.",
       "Return saved answers without calling the answer model on a hit. Generate on a miss or bypass; store only when there is a usable key.",
@@ -88,17 +89,18 @@ export const experiments = {
     change: "Reuse by similarity without checking the facts. Only a miss calls the answer model, but every lookup has a cost.",
     watch: "Card and account-credit refunds may sound alike but have different timelines. Check any reused answer for a miss.",
     steps: [
+      "Use the same prompt-cache settings as the baseline. Input caching is separate from reusing a complete answer.",
       "Turn each question into a numeric representation called an embedding. Compare it to saved questions.",
       "Reuse the closest answer above the similarity threshold. Only a miss calls the answer model, but every lookup has an embedding cost.",
       "Grade the saved answer against the current question, including facts such as refund destination or plan.",
     ],
   },
   guardrails: {
-    change: "Retry only when the extracted fields or errors change, within retry and token limits. Otherwise hand off to a person.",
-    watch: "A retry can fix a wrong printed total. It cannot fix the simulated tool outage; check where each lane stops.",
+    change: "Allow one initial attempt and at most three retries. If the invoice still fails, hand it off with the errors.",
+    watch: "A retry can fix an extraction error but not the simulated currency outage. Compare four attempts with the baseline ceiling, or stop the baseline yourself.",
     steps: [
-      ...guardedRetry,
-      "Hand off with the most recent extraction and errors. Measure successful retries and repeated work separately.",
+      ...retrySetup,
+      "Stop after three retries or sooner at the document token budget. An authorized presenter can stop new baseline retries without stopping this lane.",
     ],
   },
   no_retries: {
@@ -116,7 +118,8 @@ export const experiments = {
     change: "Add a small spend cap per invoice on top of the evidence and token limits. The app checks it after each paid attempt.",
     watch: "Look for where the cap triggers. It can stop a runaway loop, but it can also stop a recoverable invoice too soon.",
     steps: [
-      ...guardedRetry,
+      ...retrySetup,
+      "Stop at repeated evidence or the attempt or token limit, even if the document still fails.",
       "Check the spend cap after each failed attempt. One paid attempt can cross it; a cap is not a refund. Compare handoffs with successful retries.",
     ],
   },

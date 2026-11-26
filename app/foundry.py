@@ -44,6 +44,7 @@ class Reply:
     agent_version: str | None = None
     response_id: str | None = None
     sent: dict[str, Any] | None = None
+    routing_mode: str | None = None
 
 
 class ModelClient(Protocol):
@@ -126,8 +127,11 @@ def agent_reply(data: dict[str, Any], spec: AgentSpec, version: str,
                 if item.get("type") == "message" and item.get("role") == "assistant"
                 for part in item["content"] if part.get("type") == "output_text"]
     text = "".join(messages) if data.get("status") == "completed" else ""
+    selection = data.get("model_selection_details")
+    router = selection.get("model_router_details") if isinstance(selection, dict) else None
+    mode = router.get("mode") if isinstance(router, dict) else None
     return Reply(model, text, usage, request_id, agent=spec.name, agent_version=version,
-                 response_id=response_id, sent=sent)
+                 response_id=response_id, sent=sent, routing_mode=mode.lower() if isinstance(mode, str) else None)
 
 
 class LiveClient:
@@ -180,8 +184,11 @@ class LiveClient:
             **body.get("extra_body", {}),
         }
         token = await self.project_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        if "routing_config" in sent:
+            headers["Foundry-Features"] = "ModelRouterControls=V1Preview"
         response = await self.http.post(
-            f"{self.project}/openai/v1/responses", json=sent, headers={"Authorization": f"Bearer {token}"},
+            f"{self.project}/openai/v1/responses", json=sent, headers=headers,
         )
         response.raise_for_status()
         return agent_reply(response.json(), spec, version, response.headers.get("x-request-id"), sent)
