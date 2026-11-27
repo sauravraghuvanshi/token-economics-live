@@ -125,6 +125,10 @@ a browser, while `/api/config` and `/api/scoreboard` must not return data. Only
 `/healthz`, `/readyz`, and `/static/build.json` bypass the gate.
 Use `/.auth/logout` to end the App Service session.
 
+Keep the presenter's `Referrer-Policy: same-origin`: App Service checks
+the browser's origin and referrer on signed-in POSTs. This policy keeps
+referrers for requests to the demo without sending them to other sites.
+
 If the callback fails, inspect the Entra sign-in logs and verify the app
 registration, exact callback, managed identity, and federated credential
 match. To roll back a failed initial cutover, an authorized site operator can

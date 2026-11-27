@@ -65,10 +65,18 @@ def verify_howto(page: Page, badge: str) -> None:
 
 def start_run(page: Page, count: int, code: str | None, timeout: int = 5_000) -> None:
     page.locator("#count").select_option(str(count))
-    page.locator("#run").click()
-    if code and not page.evaluate("sessionStorage.getItem('demo-access') !== null"):
-        page.get_by_label("Access code", exact=True).fill(code)
-        page.get_by_role("button", name="Continue", exact=True).click()
+    with page.expect_response(
+        lambda response: urlsplit(response.url).path == "/api/runs" and response.request.method == "POST"
+    ) as submitted:
+        page.locator("#run").click()
+        if code and not page.evaluate("sessionStorage.getItem('demo-access') !== null"):
+            page.get_by_label("Access code", exact=True).fill(code)
+            page.get_by_role("button", name="Continue", exact=True).click()
+    response = submitted.value
+    assert response.status == 202, f"POST /api/runs returned HTTP {response.status}."
+    current = urlsplit(page.url)
+    assert response.request.header_value("origin") == f"{current.scheme}://{current.netloc}"
+    assert response.request.header_value("referer") == page.url
     expect(page.locator("#progress")).to_have_text(f"{count * 2}/{count * 2} lane results · complete", timeout=timeout)
     expect(page.locator("#kpis .metric-value")).to_have_count(4)
     expect(page.locator("#requests .lane-head")).to_have_count(count * 2)
