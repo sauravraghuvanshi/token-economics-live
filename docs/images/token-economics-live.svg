@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="title description">
+  <title id="title">Token Economics Live</title>
+  <desc id="description">In five full-size V6.4 live comparisons, the fact-guarded cache kept 10 of 10 answers accepted in both lanes while lowering model cost by about 37 to 39 percent.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#10243d"/>
+      <stop offset="1" stop-color="#163747"/>
+    </linearGradient>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#a9ecdb" stroke-opacity=".12"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="420" rx="24" fill="url(#background)"/>
+  <rect x="650" y="24" width="606" height="372" rx="14" fill="url(#grid)"/>
+  <g transform="translate(68 58)">
+    <rect x="1" y="1" width="34" height="34" rx="7" fill="#10243d" stroke="#66869b"/>
+    <path d="M8 9h11m-11 5h7m-7 5h4" stroke="#f6fbff" stroke-width="2" stroke-linecap="round"/>
+    <path d="m9 28 8-8 4 2 7-11m-5 0h5v5" fill="none" stroke="#a9ecdb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="54" y="24" fill="#a9ecdb" font-family="Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">TOKEN ECONOMICS LIVE</text>
+  </g>
+  <g font-family="Georgia, serif" font-size="61" fill="#f6fbff">
+    <text x="68" y="179">Same workload.</text>
+    <text x="68" y="253" fill="#a9ecdb">Two cost profiles.</text>
+  </g>
+  <g font-family="Arial, sans-serif" font-size="23" fill="#d2dfec">
+    <text x="70" y="314">Compare spend and quality</text>
+    <text x="70" y="347">with and without an optimization.</text>
+  </g>
+  <g transform="translate(666 54)" font-family="Arial, sans-serif">
+    <rect width="546" height="312" rx="18" fill="#eff4f7" stroke="#cdd9e4"/>
+    <text x="26" y="37" fill="#006659" font-size="14" font-weight="700" letter-spacing="1.7">FACT-GUARDED RESPONSE CACHE</text>
+    <rect x="26" y="57" width="239" height="114" rx="10" fill="#fff" stroke="#cdd9e4"/>
+    <rect x="281" y="57" width="239" height="114" rx="10" fill="#e8f4ec" stroke="#a3c8b9"/>
+    <g fill="#47566d" font-size="17">
+      <text x="45" y="86">Without the lever</text>
+      <text x="300" y="86">With the lever</text>
+    </g>
+    <g fill="#121f37">
+      <text x="45" y="140" font-size="39" font-weight="700">10/10</text>
+      <text x="156" y="140" font-size="16">accepted</text>
+      <text x="300" y="140" font-size="39" font-weight="700">10/10</text>
+      <text x="411" y="140" font-size="16">accepted</text>
+    </g>
+    <text x="26" y="238" fill="#006659" font-size="48" font-weight="700">37&#8211;39%</text>
+    <text x="218" y="238" fill="#121f37" font-size="23">lower model cost</text>
+    <text x="28" y="275" fill="#47566d" font-size="16">V6.4 &#183; Five full-size Live comparisons</text>
+  </g>
+</svg>
