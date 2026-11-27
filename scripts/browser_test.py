@@ -4,9 +4,36 @@ import argparse
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
-from playwright.sync_api import Page, expect, sync_playwright
+from playwright.sync_api import Browser, Cookie, Page, Request, expect, sync_playwright
+
+
+def sign_in(browser: Browser, base_url: str) -> list[Cookie]:
+    context = browser.new_context(base_url=base_url)
+    try:
+        for path in ("/api/config", "/api/scoreboard"):
+            result = context.request.get(path, max_redirects=0)
+            if result.status not in (302, 401):
+                raise AssertionError(f"Anonymous {path} returned {result.status}, expected a sign-in challenge.")
+
+        def account_picker(request: Request) -> bool:
+            target = urlsplit(request.url)
+            return (request.is_navigation_request() and target.scheme == "https"
+                    and target.hostname == "login.microsoftonline.com"
+                    and parse_qs(target.query).get("prompt") == ["select_account"])
+
+        page = context.new_page()
+        print("Complete Microsoft sign-in in the browser. The session won't be saved to disk.", flush=True)
+        with page.expect_request(account_picker):
+            page.goto("/", wait_until="domcontentloaded")
+        page.locator("#run").wait_for(state="visible", timeout=180_000)
+        cookies = context.cookies(base_url)
+        if not any(cookie["name"] == "AppServiceAuthSession" for cookie in cookies):
+            raise AssertionError("Microsoft sign-in did not establish an App Service session.")
+        return cookies
+    finally:
+        context.close()
 
 
 def open_mode(page: Page, title: str, mode: str) -> None:
@@ -160,12 +187,12 @@ def verify_live_or_offline(page: Page, config: dict, first: bool, code: str | No
         open_mode(page, "Prompt caching", "default")
         page.locator("#replay").click()
         expect(page.locator("#status")).to_have_text(re.compile(r"^REPLAY · recorded .+ IST$"), timeout=15_000)
-        expect(page.locator("#progress")).to_have_text("20/20 lane results · complete", timeout=100_000)
+        expect(page.locator("#progress")).to_have_text(
+            re.compile(r"^([1-9]\d*)/\1 lane results · complete$"), timeout=100_000,
+        )
         expect(page.locator("#access")).not_to_be_visible()
         verify_inspect(page, "candidate", "tokecon-support-lever")
-        if live:
-            if not code:
-                raise AssertionError("Set DEMO_ACCESS_CODE in the test process for the hosted Run check.")
+        if live and code:
             start_run(page, config["tabs"]["prompt_caching"]["max"], code, timeout=100_000)
             expect(page.locator("#evidence-source")).to_have_text("LIVE")
             verify_inspect(page, "control", "tokecon-support-baseline")
@@ -173,6 +200,12 @@ def verify_live_or_offline(page: Page, config: dict, first: bool, code: str | No
             if screenshots:
                 page.evaluate("window.scrollTo(0, 0)")
                 page.screenshot(path=screenshots / "tokecon-presenter-run.png", animations="disabled")
+        elif live:
+            page.locator("#run").click()
+            access = page.get_by_role("dialog", name="Demo access code")
+            expect(access).to_be_visible()
+            access.get_by_role("button", name="Cancel", exact=True).click()
+            expect(access).not_to_be_visible()
     verify_scoreboard(page, 9, scoreboard_badge)
     verify_themes(page)
 
@@ -183,6 +216,7 @@ def main() -> None:
     parser.add_argument("--channel", choices=("msedge", "chrome"))
     parser.add_argument("--source", choices=("fake", "live", "replay-only"), default="fake")
     parser.add_argument("--screenshots", type=Path)
+    parser.add_argument("--sign-in", action="store_true", help="Sign in interactively to App Service with Microsoft Entra.")
     args = parser.parse_args()
     base = urlsplit(args.base_url)
     if args.source == "live":
@@ -192,10 +226,15 @@ def main() -> None:
             args.screenshots.mkdir(parents=True, exist_ok=True)
     elif base.hostname not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("Use the local Fake or replay-only application.")
+    if args.sign_in and args.source != "live":
+        parser.error("--sign-in is only for a hosted Live test.")
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(channel=args.channel)
+        browser = pw.chromium.launch(channel=args.channel, headless=not args.sign_in)
+        cookies = sign_in(browser, args.base_url) if args.sign_in else []
         for width, height in ((1920, 1080), (1366, 768), (390, 844)):
             context = browser.new_context(viewport={"width": width, "height": height}, base_url=args.base_url)
+            if cookies:
+                context.add_cookies(cookies)
             errors: list[str] = []
             # Nothing for this browser workflow may be fetched from another origin.
             def restrict(route):

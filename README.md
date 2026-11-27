@@ -38,10 +38,11 @@ buys too few usable results.
 
 **[Open Token Economics Live](https://app-tokecon-q7yxpkuusfxba.azurewebsites.net/)**
 
-Pick a lever and select **Replay last run** to watch a recorded comparison. No
-access code or model calls are needed for Replay. To generate a fresh
-comparison, choose a workload size, select **Run**, and enter the access code
-provided by the demo operator. Live runs consume Azure model usage.
+When the [Microsoft sign-in gate](docs/operator-guide.md#microsoft-sign-in-for-the-hosted-demo)
+is enabled, choose a work or school account in the demo's Entra directory.
+Pick a lever and select **Replay last run** to watch a recorded comparison
+without an access code or model calls. For a fresh Live run, choose a workload
+size, select **Run**, and enter the code provided by the demo operator.
 
 ## Demo walkthrough
 
@@ -166,7 +167,9 @@ the tested ZIP to the existing App Service. The job verifies the deployed
 commit, health, five model deployments, six agents, and pricing readiness.
 GitHub uses a branch-scoped OIDC credential and an app-scoped managed identity;
 the workflow doesn't need a publish profile, client secret, or demo access
-code. See the [one-time OIDC setup](docs/operator-guide.md#github-actions-releases).
+code. Public liveness, readiness, and build checks let releases verify a
+sign-in-protected app without accessing its demo APIs. See the
+[one-time OIDC setup](docs/operator-guide.md#github-actions-releases).
 
 ## Run locally
 

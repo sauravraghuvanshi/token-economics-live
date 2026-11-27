@@ -7,10 +7,13 @@ from threading import Event
 import pytest
 from fastapi.testclient import TestClient
 
+from app.agents import catalog
+from app.dataset import WORKLOAD_VERSION
 from app.fake import FakeClient
 from app.guards import SpendLimit, SpendWindow
 from app.main import create_app
 from app.settings import Settings
+from app.status import StatusProbe
 
 MODES = [
     ("prompt_caching", "default"),
@@ -160,6 +163,7 @@ def test_two_completed_runs_of_every_mode_and_replay(api, lever, mode):
 def test_access_single_active_resume_and_follow_up(api):
     assert api.get("/healthz").text == "ok"
     assert api.get("/api/status").json()["mode"] == "fake"
+    assert api.get("/readyz").status_code == 503
     body = {"lever": "response_cache", "mode": "fact_guarded", "count": 5}
     assert api.post("/api/runs", json=body).status_code == 401
     assert api.post("/api/cache/clear").status_code == 401
@@ -176,6 +180,33 @@ def test_access_single_active_resume_and_follow_up(api):
     }, headers={"X-Demo-Code": "fixture-code"}).json()
     assert ask["cache_action"] == "hit" and ask["cost_usd"] == "0" and not ask["graded"]
     assert api.post("/api/cache/clear", headers={"X-Demo-Code": "fixture-code"}).json()["cleared"]
+
+
+def test_public_readiness_uses_only_the_cached_live_verdict(tmp_path, monkeypatch):
+    probes = []
+    monkeypatch.setattr(StatusProbe, "refresh", lambda probe: probes.append(probe))
+    settings = Settings(foundry_mode="live", data_dir=tmp_path, demo_access_code="fixture-code",
+                        foundry_endpoint="https://fixture.services.ai.azure.com",
+                        foundry_project_endpoint="https://fixture.services.ai.azure.com/api/projects/demo",
+                        azure_openai_base_url="https://fixture.openai.azure.com/openai/v1/")
+    app = create_app(settings, client=FakeClient(settings))
+    with TestClient(app) as client:
+        probe, = probes
+        assert client.get("/readyz").status_code == 503
+        probe.deployments = dict.fromkeys(settings.deployments.values(), "ok")
+        assert client.get("/readyz").status_code == 503
+        probe.agents = dict.fromkeys((agent.name for agent in catalog(settings).values()), "ok")
+        response = client.get("/readyz")
+        assert response.status_code == 200
+        assert response.json() == {"mode": "live", "workload_version": WORKLOAD_VERSION}
+
+        agent = next(iter(probe.agents))
+        probe.agents[agent] = "error"
+        assert client.get("/readyz").status_code == 503
+        probe.agents[agent] = "ok"
+        probe.demo.missing.add("missing-fixture-meter")
+        assert client.get("/readyz").json() == {"detail": "Live deployment is not ready."}
+        assert probes == [probe]
 
 
 def test_stop_blocks_future_baseline_retries_without_replacing_evidence(tmp_path):

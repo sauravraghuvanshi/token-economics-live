@@ -88,36 +88,89 @@ separately. Use `scripts.sync_agents` without `--apply` to verify the live
 definitions without editing them. For local Live runs in a nondefault Azure
 directory, set `AZURE_TENANT_ID` to use an explicit Azure CLI credential.
 
+## Microsoft sign-in for the hosted demo
+
+The Azure App Service gate uses the real Microsoft Entra account picker.
+It allows identities in the subscription's directory, including invited
+guests, and keeps the separate access code for paid runs. Local Fake and
+offline Replay don't use Entra sign-in.
+
+1. Deploy the application release that serves `/readyz` before changing the
+   sign-in settings. Wait for the GitHub Actions release to pass.
+2. From PowerShell 7.4+ in this checkout, sign in with Azure CLI on an
+   approved workstation and select the target subscription. Use an account
+   permitted to create an Entra app registration and its federated credential,
+   create and attach a user-assigned managed identity, and update this site.
+3. During a break between demos, run the setup and review the Azure What-If
+   before approving the final change:
+
+   ```powershell
+   .\scripts\enable_demo_sign_in.ps1 -SubscriptionId '<approved subscription ID>' `
+       -ResourceGroup '<existing App Service resource group>' -WebAppName '<existing App Service name>'
+   ```
+
+The script registers a dedicated single-tenant app with one HTTPS callback,
+attaches a separate identity for its passwordless client assertion, and
+preserves the system-assigned identity for Foundry and Key Vault. No Graph
+permissions are granted to the sign-in app, and the GitHub publishing identity
+does not change. The script prepares the identity and app settings before the
+final approval; changing the settings restarts the app. The What-If covers
+only the existing site's authentication settings. Do not reprovision the
+site to enable sign-in.
+
+Open the site in a new browser session and confirm Microsoft prompts for an
+account. After sign-in, confirm the presenter loads, Replay works without the
+demo code, and Run still asks for the code. Without a session, `/` must redirect
+a browser, while `/api/config` and `/api/scoreboard` must not return data. Only
+`/healthz`, `/readyz`, and `/static/build.json` bypass the gate.
+Use `/.auth/logout` to end the App Service session.
+
+If the callback fails, inspect the Entra sign-in logs and verify the app
+registration, exact callback, managed identity, and federated credential
+match. To roll back a failed initial cutover, an authorized site operator can
+choose **Allow unauthenticated access** in App Service **Authentication >
+Edit authentication settings**. The paid-run access code still applies.
+
 ## Hosted access and readiness
 
 The managed identity reaches the vault through VNet integration and a private
-endpoint. Public vault access remains disabled. For the hosted demo, use the
+endpoint. Public vault access remains disabled. To verify hosted sign-in
+without running paid inference, leave `DEMO_ACCESS_CODE` unset and run:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.browser_test --base-url 'https://app-tokecon-q7yxpkuusfxba.azurewebsites.net' --source live --channel msedge --sign-in
+```
+
+The check prompts for sign-in, holds the App Service session in memory, plays
+a recording, and checks that **Run** asks for the code. For a paid browser
+check, use the
 `demo-access-code` secret in the deployment's vault from an authorized
 account on the private network. On the original Windows account, the local
-encrypted copy is `.azure\tokecon-demo\demo-access-code.dpapi`. To smoke-test
-with it, decrypt it only into the PowerShell 7 process environment:
+encrypted copy is `.azure\tokecon-demo\demo-access-code.dpapi`. Decrypt it only
+into the PowerShell 7 process environment:
 
 ```powershell
 $url = 'https://app-tokecon-q7yxpkuusfxba.azurewebsites.net'
 $code = ConvertTo-SecureString (Get-Content -Raw '.azure\tokecon-demo\demo-access-code.dpapi').Trim()
 try {
     $env:DEMO_ACCESS_CODE = ConvertFrom-SecureString $code -AsPlainText
-    .\.venv\Scripts\python.exe -m scripts.smoke_test --base-url $url
+    .\.venv\Scripts\python.exe -m scripts.browser_test --base-url $url --source live --channel msedge --sign-in
 } finally {
     Remove-Item Env:\DEMO_ACCESS_CODE -ErrorAction SilentlyContinue
     $code.Dispose()
 }
 ```
 
-In the browser, enter the same code in the app's access dialog after pressing
-**Run**. Use only a private terminal or the vault to retrieve the value. Do
-not paste it into chat or put it in a slide. Replay doesn't require the code.
+For a manual run, enter the code in the app's access dialog after selecting
+**Run**. Use only a private terminal or the vault to retrieve the value.
+Don't put it in chat or on a slide. Replay doesn't require the code.
 
-The app must return `ok` at `/healthz`; `/api/status` must list all five models
-and six agents as `ok` and report verified prices without missing meters. The startup probes
-use managed identity and can take time after a fresh deployment or a role
-change. Unauthenticated status reads do not trigger inference. A
-code-authenticated status refresh is limited to once per minute.
+The app must return `ok` at `/healthz`. `/readyz` returns the Live workload
+version after all five models, six agents, and pricing are ready. Neither
+endpoint triggers inference. The signed-in `/api/status` provides details.
+Startup probes use managed identity and can take time after a fresh
+deployment or a role change. A code-authenticated refresh is limited to
+once per minute.
 
 ## GitHub Actions releases
 
@@ -169,8 +222,8 @@ gh variable set AZURE_RESOURCE_GROUP --repo $repo --body $group
 gh variable set AZURE_WEBAPP_NAME --repo $repo --body $app
 ```
 
-Before enabling publishing, confirm `/api/status` reports the existing models
-and agents as ready. Verify the router's deployed pool from Azure:
+Before enabling publishing, confirm `/readyz` reports the Live workload
+version. Verify the router's deployed pool from Azure:
 
 ```powershell
 $foundryAccountId = '<confirmed ARM resource ID of the Foundry account>'
@@ -235,12 +288,16 @@ without disabling CI.
    never treat those intentional misses as a broken demo. Report Small-only
    quality as measured, not as a guaranteed drop.
 
+The command-line clients below don't sign in to App Service. Once hosted
+sign-in is enabled, point them at a local Live instance configured for the
+approved Foundry project. Use the signed-in [browser check](#hosted-access-and-readiness)
+for the hosted presenter itself.
+
 ```powershell
-$url = 'https://<app-host>'
+$url = 'http://127.0.0.1:8000'
 python -m scripts.smoke_test --base-url $url --rounds 5 --assert-stories --fail-fast --output .data\live-default-verification.json
 python -m scripts.smoke_test --base-url $url --rounds 5 --max-counts --assert-stories --fail-fast --output .data\live-verification.json
 python -m scripts.export_replays --base-url $url
-python -m scripts.browser_test --base-url $url --source live --channel msedge
 ```
 
 The smoke check verifies real model usage, agent identity, event order, exact
@@ -249,10 +306,11 @@ grades and timing, not a guarantee of identical model answers. Full story
 verification requires all nine modes, including the configured tight budget.
 The browser check uses a process-local `DEMO_ACCESS_CODE`. It checks all
 briefs and both self-hosted fonts at 1920×1080, 1366×768 and 390×844, then
-exercises Replay, the access dialog, live streaming and agent receipts.
+exercises Replay and the access dialog. If given the demo code, it also
+checks Live streaming and agent receipts.
 Capture a Live Scoreboard screenshot before playing recordings: Replay
 updates the board with a Replay badge. Replay uses original event timing and
-makes no inference calls. Use `--verify-replays` to check HTTPS Replay at 2× speed.
+makes no inference calls. Use `--verify-replays` to check Replay at 2× speed.
 Replays and Scoreboard rows are release-specific. Export fresh Live recordings
 after a workload change; older recordings are retained only as historical evidence.
 
@@ -279,11 +337,11 @@ customEvents
 - **Day before:** finish the dry run, export and review all nine genuine Live
   recordings, then commit them under [`replays/`](../replays/). Save a screenshot of the Live
   Scoreboard for the backup slide. Fake results are never a substitute for Live.
-- **Before going on:** open the HTTPS app, check the green Foundry pill and clear
-  the response cache. Run `python -m scripts.warmup --base-url $url` to warm the
-  prefix. A warmed first request can show a read instead of a write. Confirm
-  Replay opens and use five support requests (six for both cache traps) and
-  three invoices.
+- **Before going on:** sign in to the HTTPS app, check the green Foundry pill,
+  and clear the response cache. To warm the prefix, run Prompt caching from
+  the presenter. A warmed first request can show a read instead of a write.
+  Confirm Replay opens and use five support requests (six for both cache
+  traps) and three invoices.
 - **On stage:** show token buckets in Prompt caching; routed models and the
   Decision escalation in Model routing; exact hits and wrong hits in Response
   caching; the safety ceiling versus handoff in Retry. Close with the Scoreboard

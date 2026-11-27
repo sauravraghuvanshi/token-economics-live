@@ -452,9 +452,15 @@ For cache hits, grade the **stored** answer against the **current** request's ex
 
 ### 13.1 Endpoints
 
+The table lists app-level checks. When [Microsoft sign-in](docs/operator-guide.md#microsoft-sign-in-for-the-hosted-demo)
+is enabled, Azure App Service also requires a session for the UI, static assets
+and `/api/*` routes. Only the exact liveness, readiness and build marker paths
+are excluded.
+
 | Method and path | Auth | Purpose |
 |---|---|---|
 | `GET /healthz` | none | Returns `ok` (App Service health check); no Azure calls |
+| `GET /readyz` | none | Returns the Live workload version when the cached startup checks confirm Ready; otherwise 503. No Azure calls |
 | `GET /api/status` | none | `{mode: live|fake|replay-only, foundry: ok|error, detail, deployments: {name: ok|error}, prices_verified, verified_on, missing_prices: [...]}`. Checks each deployment with the cheapest possible call, cached for 60 s |
 | `GET /api/config` | none | Tabs, modes, request lists (id, text, language, category), count limits, deployment names, sanitised price table |
 | `POST /api/runs` | `X-Demo-Code` | Body `{lever, mode, count}` → `{run_id}`. Rejects with 409 if a run is active and 429 if the spend guard is reached |

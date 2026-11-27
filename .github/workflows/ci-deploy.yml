@@ -168,11 +168,8 @@ jobs:
             if [[ "$(curl -fsS --max-time 10 "$SITE_URL/healthz")" == ok ]] &&
                 curl -fsS --max-time 10 "$SITE_URL/static/build.json?revision=$GITHUB_SHA" |
                   jq -e --arg sha "$GITHUB_SHA" '.commit == $sha' >/dev/null &&
-                curl -fsS --max-time 10 "$SITE_URL/api/config" |
-                  jq -e --arg version "$WORKLOAD_VERSION" '.workload_version == $version and .mode == "live"' >/dev/null &&
-                curl -fsS --max-time 10 "$SITE_URL/api/status" |
-                  jq -e '.mode == "live" and .foundry == "ok" and .prices_verified and .missing_prices == []
-                    and (.deployments | length) == 5 and (.agents | length) == 6' >/dev/null; then
+                curl -fsS --max-time 10 "$SITE_URL/readyz" |
+                  jq -e --arg version "$WORKLOAD_VERSION" '.workload_version == $version and .mode == "live"' >/dev/null; then
               printf '[%s](%s) is live with verified prices, five models, and six agents.\n' \
                 "$WORKLOAD_VERSION" "$SITE_URL" >> "$GITHUB_STEP_SUMMARY"
               exit 0

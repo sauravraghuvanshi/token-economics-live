@@ -68,6 +68,16 @@ class StatusProbe:
         self.detail = next((f"{name}: {detail}" for name, status, detail in results if status == "error"),
                            "Model deployments and Foundry agents are ready.")
 
+    @property
+    def foundry_ok(self) -> bool:
+        return bool(self.deployments) and all(v == "ok" for v in (*self.deployments.values(), *self.agents.values()))
+
+    @property
+    def live_ready(self) -> bool:
+        return (self.demo.settings.source == "live" and not self.problem and self.foundry_ok
+                and len(self.deployments) == 5 and len(self.agents) == 6
+                and self.demo.prices_verified and not self.demo.missing)
+
     def payload(self) -> dict[str, Any]:
         mode = self.demo.settings.source
         detail = self.detail
@@ -75,9 +85,9 @@ class StatusProbe:
             detail = "Synthetic data and fixture prices. No Azure calls."
         elif mode == "replay-only":
             detail = "Offline playback. No Azure calls."
-        ok = bool(self.deployments) and all(v == "ok" for v in (*self.deployments.values(), *self.agents.values()))
         return {
-            "mode": mode, "foundry": "ok" if ok else "error", "detail": detail, "deployments": self.deployments,
+            "mode": mode, "foundry": "ok" if self.foundry_ok else "error", "detail": detail,
+            "deployments": self.deployments,
             "agents": self.agents,
             "prices_verified": self.demo.prices_verified, "verified_on": self.demo.prices.verified_on,
             "missing_prices": sorted(self.demo.missing),

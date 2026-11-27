@@ -47,6 +47,7 @@ def create_app(config: Settings | None = None, client: ModelClient | None = None
     async def lifespan(api: FastAPI):
         api.state.demo = None
         api.state.problem = None
+        api.state.probe = None
         try:
             settings = config or Settings()
             logging.basicConfig(level=settings.log_level)
@@ -136,6 +137,13 @@ def create_app(config: Settings | None = None, client: ModelClient | None = None
     @api.get("/healthz", response_class=PlainTextResponse)
     async def healthz() -> str:
         return "ok"
+
+    @api.get("/readyz")
+    async def readiness(request: Request) -> dict[str, str]:
+        probe: StatusProbe | None = request.app.state.probe
+        if probe is None or not probe.live_ready:
+            raise HTTPException(503, "Live deployment is not ready.")
+        return {"mode": "live", "workload_version": WORKLOAD_VERSION}
 
     @api.get("/api/status")
     async def status(request: Request, code: AccessHeader = None) -> dict[str, Any]:
